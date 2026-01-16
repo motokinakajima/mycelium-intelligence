@@ -1,21 +1,24 @@
-constexpr int INPUT_SIZE = 7;
-constexpr int HIDDEN_SIZE = 6;
-constexpr int OUTPUT_SIZE = 5;
-constexpr float LEARNING_RATE = 0.1f;
-
-static_assert(INPUT_SIZE > 0, "INPUT_SIZE must be greater than 0");
-static_assert(HIDDEN_SIZE > 0, "HIDDEN_SIZE must be greater than 0");
-static_assert(OUTPUT_SIZE > 0, "OUTPUT_SIZE must be greater than 0");
-
-#include <array>
+#include "nn.h"
 #include <cmath>
+#include <random>
 
-struct NeuralNetwork {
-    std::array<std::array<float, INPUT_SIZE>, HIDDEN_SIZE> W1;
-    std::array<float, HIDDEN_SIZE> b1;
-    std::array<std::array<float, HIDDEN_SIZE>, OUTPUT_SIZE> W2;
-    std::array<float, OUTPUT_SIZE> b2;
-};
+NeuralNetwork::NeuralNetwork() : W1{}, b1{}, W2{}, b2{} {
+    std::random_device rd;
+    std::mt19937 gen(rd());
+    std::uniform_real_distribution<float> dist(-1.0f, 1.0f);
+    for(int i = 0;i < HIDDEN_SIZE; i++) {
+        for(int j = 0;j < INPUT_SIZE; j++) {
+            W1[i][j] = dist(gen);
+        }
+        b1[i] = dist(gen);
+    }
+    for(int i = 0;i < OUTPUT_SIZE; i++) {
+        for(int j = 0;j < HIDDEN_SIZE; j++) {
+            W2[i][j] = dist(gen);
+        }
+        b2[i] = dist(gen);
+    }
+}
 
 void forward(NeuralNetwork& nn,
             const std::array<float, INPUT_SIZE>& x,
