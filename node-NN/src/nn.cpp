@@ -87,6 +87,7 @@ void back_propagate(NeuralNetwork& nn,
     for(int i = 0;i < OUTPUT_SIZE; i++) {
         float output_error = target[i] - y[i];
         output_deltas[i] = output_error * (1 - y[i] * y[i]);
+        output_deltas[i] *= LEARNING_RATE;
     }
     for(int i = 0;i < HIDDEN_SIZE; i++) {
         float hidden_error = 0.0f;
@@ -94,19 +95,20 @@ void back_propagate(NeuralNetwork& nn,
             hidden_error += output_deltas[j] * nn.W2[j][i];
         }
         hidden_deltas[i] = hidden_error * (1 - h[i] * h[i]);
+        hidden_deltas[i] *= LEARNING_RATE;
     }
 
     for(int i = 0;i < OUTPUT_SIZE; i++) {
         for(int j = 0;j < HIDDEN_SIZE; j++) {
-            nn.W2[i][j] += output_deltas[i] * h[j] * LEARNING_RATE;
+            nn.W2[i][j] += output_deltas[i] * h[j];
         }
-        nn.b2[i] += output_deltas[i] * LEARNING_RATE;
+        nn.b2[i] += output_deltas[i];
     }
     for(int i = 0;i < HIDDEN_SIZE; i++) {
         for(int j = 0;j < INPUT_SIZE; j++) {
-            nn.W1[i][j] += hidden_deltas[i] * x[j] * LEARNING_RATE;
+            nn.W1[i][j] += hidden_deltas[i] * x[j];
         }
-        nn.b1[i] += hidden_deltas[i] * LEARNING_RATE;
+        nn.b1[i] += hidden_deltas[i];
     }
 }
 
