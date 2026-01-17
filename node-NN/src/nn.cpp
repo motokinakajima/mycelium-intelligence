@@ -47,13 +47,10 @@ void forward(NeuralNetwork& nn,
 void forward(const NeuralNetwork& nn,
             const std::array<float, INPUT_SIZE>& x,
             std::array<float, OUTPUT_SIZE>& y,
-            std::array<float, HIDDEN_SIZE>& h,
-            const std::array<float, OUTPUT_SIZE>& target,
-            float& error){
+            std::array<float, HIDDEN_SIZE>& h) {
 
     h = {};
     y = {};
-    error = 0.0f;
 
     for(int i = 0;i < HIDDEN_SIZE; i++) {
         for(int j = 0;j < INPUT_SIZE; j++) {
@@ -69,9 +66,16 @@ void forward(const NeuralNetwork& nn,
         }
         y[i] += nn.b2[i];
         y[i] = activate(y[i]);
+    }
+}
+
+void cost(const std::array<float, OUTPUT_SIZE>& y,
+          const std::array<float, OUTPUT_SIZE>& target,
+          float& error) {
+    error = 0.0f;
+    for(int i = 0;i < OUTPUT_SIZE; i++) {
         error += (y[i] - target[i]) * (y[i] - target[i]);
     }
-
     error /= (OUTPUT_SIZE * 2);
 }
 
@@ -92,7 +96,8 @@ void add_gradients(const NeuralNetwork& nn,
     std::array<float, OUTPUT_SIZE> y;
     float error;
 
-    forward(nn, x, y, h, target, error);
+    forward(nn, x, y, h);
+    cost(y, target, error);
     std::array<float, OUTPUT_SIZE> output_deltas{};
     std::array<float, HIDDEN_SIZE> hidden_deltas{};
     for(int i = 0;i < OUTPUT_SIZE; i++) {
