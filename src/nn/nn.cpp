@@ -35,30 +35,6 @@ namespace node_nn {
         this->set_zero();
     }
 
-    void forward(NeuralNetwork &nn,
-                 const std::array<float, INPUT_SIZE> &x,
-                 std::array<float, OUTPUT_SIZE> &y) {
-
-        std::array<float, HIDDEN_SIZE> hidden{};
-        y = {};
-
-        for (int i = 0; i < HIDDEN_SIZE; i++) {
-            for (int j = 0; j < INPUT_SIZE; j++) {
-                hidden[i] += x[j] * nn.W1[i][j];
-            }
-            hidden[i] += nn.b1[i];
-            hidden[i] = activate(hidden[i]);
-        }
-
-        for (int i = 0; i < OUTPUT_SIZE; i++) {
-            for (int j = 0; j < HIDDEN_SIZE; j++) {
-                y[i] += hidden[j] * nn.W2[i][j];
-            }
-            y[i] += nn.b2[i];
-            y[i] = activate(y[i]);
-        }
-    }
-
     void forward(const NeuralNetwork &nn,
                  const std::array<float, INPUT_SIZE> &x,
                  std::array<float, OUTPUT_SIZE> &y,
@@ -82,6 +58,13 @@ namespace node_nn {
             y[i] += nn.b2[i];
             y[i] = activate(y[i]);
         }
+    }
+
+    void forward(const NeuralNetwork &nn,
+                 const std::array<float, INPUT_SIZE> &x,
+                 std::array<float, OUTPUT_SIZE> &y) {
+        std::array<float, HIDDEN_SIZE> h = {};
+        forward(nn, x, y, h);
     }
 
     void cost(const std::array<float, OUTPUT_SIZE> &y,
