@@ -27,10 +27,11 @@ int main() {
 
     // Optionally, run more updates to see learning and print error for each step
     float error = 0.0f;
-    for (int i = 0; i < 100; ++i) {
+    for (int i = 0; i < 10000; ++i) {
         single_back_propagate(nn, input, target);
         // Calculate error after update
         forward(nn, input, output);
+        cost(output, target, error);
         std::cout << "Error after step " << i+1 << ": " << error << std::endl;
     }
     forward(nn, input, output);
