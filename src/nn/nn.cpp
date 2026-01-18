@@ -1,5 +1,6 @@
 #include "nn.h"
 #include <cmath>
+#include <vector>
 #include <random>
 
 namespace node_nn {
@@ -102,10 +103,26 @@ namespace node_nn {
         apply_gradients(nn, gradient, 1.0f);
     }
 
+    void back_propagate(NeuralNetwork &nn,
+                        const std::vector<std::array<float, INPUT_SIZE>> &input,
+                        const std::vector<std::array<float, OUTPUT_SIZE>> &target) {
+
+        if (input.size() != target.size()) {
+            return;
+        }
+
+        Gradients gradient;
+        for (int i = 0;i < input.size(); i++) {
+            add_gradients(nn, input[i], target[i], gradient);
+        }
+        apply_gradients(nn, gradient, static_cast<float>(input.size()));
+    }
+
     void add_gradients(const NeuralNetwork &nn,
                        const std::array<float, INPUT_SIZE> &x,
                        const std::array<float, OUTPUT_SIZE> &target,
                        Gradients &gradient) {
+
         std::array<float, HIDDEN_SIZE> h = {};
         std::array<float, OUTPUT_SIZE> y = {};
         float error;

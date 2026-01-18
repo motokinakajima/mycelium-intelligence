@@ -43,4 +43,6 @@ namespace node_nn {
     void single_back_propagate(NeuralNetwork &nn, const std::array<float, INPUT_SIZE> &x,
                                const std::array<float, OUTPUT_SIZE> &target);
 
+    void back_propagate(NeuralNetwork &nn, const std::array<float, INPUT_SIZE> &input, const std::array<float, OUTPUT_SIZE> &target);
+
 }
