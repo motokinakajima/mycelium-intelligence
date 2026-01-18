@@ -15,8 +15,9 @@ int main() {
     for (float v : output) std::cout << v << ' ';
     std::cout << std::endl;
 
+
     // Online update (single step)
-    back_propagate(nn, input, target);
+    single_back_propagate(nn, input, target);
 
     // Forward pass after one update
     forward(nn, input, output);
@@ -26,11 +27,10 @@ int main() {
 
     // Optionally, run more updates to see learning and print error for each step
     float error = 0.0f;
-    std::array<float, HIDDEN_SIZE> h; // dummy, not used here
     for (int i = 0; i < 100; ++i) {
-        back_propagate(nn, input, target);
+        single_back_propagate(nn, input, target);
         // Calculate error after update
-        forward(nn, input, output, h, target, error);
+        forward(nn, input, output);
         std::cout << "Error after step " << i+1 << ": " << error << std::endl;
     }
     forward(nn, input, output);

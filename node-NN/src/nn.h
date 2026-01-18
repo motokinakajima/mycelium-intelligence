@@ -15,6 +15,9 @@ struct NeuralNetwork {
 };
 
 float activate(float x);
+void forward(NeuralNetwork& nn, const std::array<float, INPUT_SIZE>& x, std::array<float, OUTPUT_SIZE>& y);
 void forward(NeuralNetwork& nn, const std::array<float, INPUT_SIZE>& x, std::array<float, OUTPUT_SIZE>& y, std::array<float, HIDDEN_SIZE>& h);
 void cost(const std::array<float, OUTPUT_SIZE>& y, const std::array<float, OUTPUT_SIZE>& target, float& error);
-void back_propagate(NeuralNetwork& nn, const std::array<float, INPUT_SIZE>& x, const std::array<float, OUTPUT_SIZE>& target);
+void add_gradients(const NeuralNetwork& nn, const std::array<float, INPUT_SIZE>& x, const std::array<float, OUTPUT_SIZE>& target, NeuralNetwork& gradient);
+void apply_gradients(NeuralNetwork& nn, const NeuralNetwork& gradient, float batch_size);
+void single_back_propagate(NeuralNetwork& nn, const std::array<float, INPUT_SIZE>& x, const std::array<float, OUTPUT_SIZE>& target);
