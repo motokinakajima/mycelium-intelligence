@@ -1,12 +1,18 @@
 #pragma once
 #include <array>
+#include <vector>
 
 namespace node_nn {
 
     constexpr int INPUT_SIZE = 7;
     constexpr int HIDDEN_SIZE = 6;
     constexpr int OUTPUT_SIZE = 5;
-    constexpr float LEARNING_RATE = 0.1f;
+    constexpr float LEARNING_RATE = 0.001f;
+
+    constexpr float BETA_1 = 0.9f;
+    constexpr float BETA_2 = 0.999f;
+
+    constexpr float EPSILON = 1.0e-8;
 
     struct Parameters {
         std::array<std::array<float, INPUT_SIZE>, HIDDEN_SIZE> W1;
@@ -26,11 +32,27 @@ namespace node_nn {
         Gradients();
     };
 
+    struct AdamM : Parameters {
+        AdamM();
+    };
+
+    struct AdamV : Parameters {
+        AdamV();
+    };
+
+    struct AdamState {
+        AdamM m;
+        AdamV v;
+        int t;
+
+        AdamState();
+    };
+
     float activate(float x);
 
-    void forward(NeuralNetwork &nn, const std::array<float, INPUT_SIZE> &x, std::array<float, OUTPUT_SIZE> &y);
+    void forward(const NeuralNetwork &nn, const std::array<float, INPUT_SIZE> &x, std::array<float, OUTPUT_SIZE> &y);
 
-    void forward(NeuralNetwork &nn, const std::array<float, INPUT_SIZE> &x, std::array<float, OUTPUT_SIZE> &y,
+    void forward(const NeuralNetwork &nn, const std::array<float, INPUT_SIZE> &x, std::array<float, OUTPUT_SIZE> &y,
                  std::array<float, HIDDEN_SIZE> &h);
 
     void cost(const std::array<float, OUTPUT_SIZE> &y, const std::array<float, OUTPUT_SIZE> &target, float &error);
@@ -43,6 +65,13 @@ namespace node_nn {
     void single_back_propagate(NeuralNetwork &nn, const std::array<float, INPUT_SIZE> &x,
                                const std::array<float, OUTPUT_SIZE> &target);
 
+    void average_gradients(Gradients &g, float batch_size);
+
     void back_propagate(NeuralNetwork &nn, const std::array<float, INPUT_SIZE> &input, const std::array<float, OUTPUT_SIZE> &target);
+
+    void adam(NeuralNetwork &nn,
+              const std::vector<std::array<float, INPUT_SIZE>> &input,
+              const std::vector<std::array<float, OUTPUT_SIZE>> &target,
+              AdamState &state);
 
 }
