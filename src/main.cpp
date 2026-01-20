@@ -1,4 +1,5 @@
-#include "nn/node_nn/nn.h"
+#include "node_nn/nn.h"
+#include "node_nn/utils/io.h"
 #include <iostream>
 #include <vector>
 
@@ -46,6 +47,32 @@ int main() {
     std::cout << "Output after 1000 updates: ";
     for (float v : output) std::cout << v << ' ';
     std::cout << std::endl;
+
+    std::string model_path = "test_model.nn";
+    if (node_nn::save_model(model_path, nn)) {
+        std::cout << "Model saved to " << model_path << std::endl;
+    }
+
+    node_nn::NeuralNetwork loaded_nn;
+
+    if (node_nn::load_model(model_path, loaded_nn)) {
+        std::cout << "Model loaded from " << model_path << std::endl;
+    }
+
+    // 5. 読み込んだモデルで推論して結果を比較
+    std::array<float, node_nn::OUTPUT_SIZE> loaded_output = {};
+    node_nn::forward(loaded_nn, input, loaded_output);
+
+    std::cout << "Loaded output:   ";
+    for (float v : loaded_output) std::cout << v << ' ';
+    std::cout << std::endl;
+
+    // 一致確認
+    bool match = true;
+    for(int i=0; i<node_nn::OUTPUT_SIZE; ++i) {
+        if (std::abs(output[i] - loaded_output[i]) > 1e-6) match = false;
+    }
+    std::cout << (match ? "SUCCESS: Outputs match!" : "FAILURE: Outputs differ!") << std::endl;
 
     return 0;
 }
