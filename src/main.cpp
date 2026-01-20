@@ -1,4 +1,4 @@
-#include "nn/nn.h"
+#include "nn/node_nn/nn.h"
 #include <iostream>
 #include <vector>
 
