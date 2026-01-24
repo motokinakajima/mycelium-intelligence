@@ -111,6 +111,10 @@ namespace node_nn {
         apply_gradients(nn, gradient, static_cast<float>(input.size()));
     }
 
+    void back_propagate(NeuralNetwork &nn, const TrainingData &data) {
+        back_propagate(nn, data.input, data.target);
+    }
+
     void adam(NeuralNetwork &nn,
               const std::vector<std::array<float, INPUT_SIZE>> &input,
               const std::vector<std::array<float, OUTPUT_SIZE>> &target,
@@ -165,6 +169,12 @@ namespace node_nn {
             float v_hat = state.v.b2[i] / bias_correction_2;
             nn.b2[i] = nn.b2[i] + lr * (m_hat / std::sqrt(v_hat + EPSILON));
         }
+    }
+
+    void adam(NeuralNetwork &nn,
+              const TrainingData &data,
+              AdamState &state) {
+        adam(nn, data.input, data.target, state);
     }
 
     void add_gradients(const NeuralNetwork &nn,
@@ -234,6 +244,17 @@ namespace node_nn {
             }
             g.b2[i] /= batch_size;
         }
+    }
+
+    void separate_train_data(TrainingData &learn, TrainingData &test, float test_ratio) {
+        size_t total_size = learn.input.size();
+        size_t test_size = static_cast<size_t>(total_size * test_ratio);
+
+        test.input.insert(test.input.end(), learn.input.end() - test_size, learn.input.end());
+        test.target.insert(test.target.end(), learn.target.end() - test_size, learn.target.end());
+
+        learn.input.resize(total_size - test_size);
+        learn.target.resize(total_size - test_size);
     }
 
     float activate(float x) {

@@ -48,6 +48,11 @@ namespace node_nn {
         AdamState();
     };
 
+    struct TrainingData {
+        std::vector<std::array<float, INPUT_SIZE>> input;
+        std::vector<std::array<float, OUTPUT_SIZE>> target;
+    };
+
     float activate(float x);
 
     void forward(const NeuralNetwork &nn, const std::array<float, INPUT_SIZE> &x, std::array<float, OUTPUT_SIZE> &y);
@@ -69,9 +74,17 @@ namespace node_nn {
 
     void back_propagate(NeuralNetwork &nn, const std::array<float, INPUT_SIZE> &input, const std::array<float, OUTPUT_SIZE> &target);
 
+    void back_propagate(NeuralNetwork &nn, const TrainingData &data);
+
     void adam(NeuralNetwork &nn,
               const std::vector<std::array<float, INPUT_SIZE>> &input,
               const std::vector<std::array<float, OUTPUT_SIZE>> &target,
               AdamState &state);
+    
+    void adam(NeuralNetwork &nn,
+              const TrainingData &data,
+              AdamState &state);
+    
+    void separate_train_data(TrainingData &learn, TrainingData &test, float test_ratio);
 
 }
