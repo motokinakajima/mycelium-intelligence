@@ -4,9 +4,9 @@
 
 namespace node_nn {
 
-    constexpr int INPUT_SIZE = 7;
-    constexpr int HIDDEN_SIZE = 6;
-    constexpr int OUTPUT_SIZE = 5;
+    constexpr int INPUT_SIZE = 8;
+    constexpr int HIDDEN_SIZE = 5;
+    constexpr int OUTPUT_SIZE = 2;
     constexpr float LEARNING_RATE = 0.001f;
 
     constexpr float BETA_1 = 0.9f;
@@ -84,6 +84,8 @@ namespace node_nn {
     void adam(NeuralNetwork &nn,
               const TrainingData &data,
               AdamState &state);
+    
+    float average_cost(const NeuralNetwork &nn, const TrainingData &data);
     
     void separate_train_data(TrainingData &learn, TrainingData &test, float test_ratio);
 

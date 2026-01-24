@@ -246,6 +246,18 @@ namespace node_nn {
         }
     }
 
+    float average_cost(const NeuralNetwork &nn, const TrainingData &data) {
+        float total_cost = 0.0f;
+        for (size_t i = 0; i < data.input.size(); i++) {
+            std::array<float, OUTPUT_SIZE> y = {};
+            forward(nn, data.input[i], y);
+            float error;
+            cost(y, data.target[i], error);
+            total_cost += error;
+        }
+        return total_cost / static_cast<float>(data.input.size());
+    }
+
     void separate_train_data(TrainingData &learn, TrainingData &test, float test_ratio) {
         size_t total_size = learn.input.size();
         size_t test_size = static_cast<size_t>(total_size * test_ratio);
