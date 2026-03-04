@@ -5,8 +5,8 @@
 namespace node_nn {
 
     constexpr int INPUT_SIZE = 8;
-    constexpr int HIDDEN_SIZE = 5;
-    constexpr int OUTPUT_SIZE = 2;
+    constexpr int HIDDEN_SIZE = 8;
+    constexpr int OUTPUT_SIZE = 7;
     constexpr float LEARNING_RATE = 0.001f;
 
     constexpr float BETA_1 = 0.9f;

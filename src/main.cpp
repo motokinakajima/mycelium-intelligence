@@ -1,53 +1,85 @@
+// ---------------------------------------------------------------------------
+// Dummy simulation experiment
+//
+// Generates a 5x5 maze (11x11 grid), places a single seed node at the entry,
+// and runs the simulation for NUM_STEPS steps using a freshly initialised
+// (random-weight) NeuralNetwork.  Results are written to sim_output.json.
+//
+// Build & run:
+//   cmake --build cmake-build-debug && ./cmake-build-debug/mycelium
+//
+// Then load sim_output.json in the HTML visualiser.
+// ---------------------------------------------------------------------------
+
 #include "node_nn/nn.h"
-#include "node_nn/utils/io.h"
+#include "graph.h"    // sim::Graph, sim::step, sim::cleanup_dead
+#include "maze.h"     // sim::generate_maze, sim::Maze
+#include "export.h"   // sim::SimExporter
+
 #include <iostream>
-#include <string>
 
-int main(const int argc, char* argv[]) {
-    if (argc < 3) {
-        std::cerr << "Usage: " << argv[0] << " <training_data.csv> <model_output.nn>\n";
-        return 1;
+int main() {
+    // ---- Maze setup ---------------------------------------------------
+    constexpr int MAZE_COLS = 5;   // "room" columns  -> grid width  = 11
+    constexpr int MAZE_ROWS = 5;   // "room" rows     -> grid height = 11
+    constexpr unsigned MAZE_SEED = 42u;
+
+    sim::Maze maze = sim::generate_maze(MAZE_COLS, MAZE_ROWS, MAZE_SEED);
+    std::cout << "Maze: " << maze.width << " x " << maze.height << " cells\n";
+
+    // Entry: left opening carved at (col=0, row=1)  -> centre (0.5, 1.5)
+    // Exit:  right opening at (col=W-1, row=H-2)   -> centre (W-0.5, H-1.5)
+    const sim::Vec2 start  = { 0.5f,
+                               1.5f };
+    const sim::Vec2 target = { static_cast<float>(maze.width)  - 0.5f,
+                               static_cast<float>(maze.height) - 1.5f };
+
+    std::cout << "Start:  (" << start.x  << ", " << start.y  << ")\n";
+    std::cout << "Target: (" << target.x << ", " << target.y << ")\n";
+
+    // ---- Initial graph: single seed node at entry --------------------
+    sim::Graph graph;
+    {
+        sim::Node seed;
+        seed.pos     = start;
+        seed.is_dead = false;
+        graph.nodes.push_back(seed);
     }
-    const std::string data_path = argv[1];
-    const std::string model_path = argv[2];
 
-    constexpr int NUM_ITER = 1000; // Number of training iterations
-    constexpr float TEST_RATIO = 0.2f; // Fraction of data for testing
+    // ---- Neural network: random initialisation (no training data) ----
+    node_nn::NeuralNetwork nn;   // constructor calls randomize()
 
-    node_nn::TrainingData all_data;
-    if (!node_nn::load_training_data(data_path, all_data)) {
-        std::cerr << "Failed to load training data from " << data_path << std::endl;
-        return 1;
-    }
+    // For this dummy experiment, bias the output layer so that:
+    //   - O[6] (Apoptosis) starts close to -1  -> nodes won't self-destruct
+    //   - O[0..1] (Grow)   biased positive     -> encourage outward growth
+    // In a real run these biases are learned from training data.
+    nn.b2[6] = -4.0f;   // tanh(-4) ≈ -0.999 -> apoptosis suppressed
+    nn.b2[0] =  1.5f;   // nudge Grow X positive
+    nn.b2[1] =  1.5f;   // nudge Grow Y positive
 
-    node_nn::TrainingData train_data = all_data, test_data;
-    node_nn::separate_train_data(train_data, test_data, TEST_RATIO);
+    std::cout << "NeuralNetwork: random weights (INPUT=" << node_nn::INPUT_SIZE
+              << ", HIDDEN=" << node_nn::HIDDEN_SIZE
+              << ", OUTPUT=" << node_nn::OUTPUT_SIZE << ")\n";
 
-    node_nn::NeuralNetwork nn;
-    node_nn::AdamState state;
+    // ---- Run simulation ----------------------------------------------
+    constexpr int NUM_STEPS        = 100;
+    const std::string output_path  = "sim_output.json";
 
-    // Debug: print initial cost before training
-    float initial_train_cost = node_nn::average_cost(nn, train_data);
-    float initial_test_cost = node_nn::average_cost(nn, test_data);
-    std::cout << "Initial train cost: " << initial_train_cost << ", Initial test cost: " << initial_test_cost << std::endl;
+    sim::SimExporter exporter(output_path, maze);
 
-    // Training loop
-    for (int i = 0; i < NUM_ITER; ++i) {
-        node_nn::adam(nn, train_data, state);
-        if ((i+1) % 100 == 0 || i == 0) {
-            float train_cost = node_nn::average_cost(nn, train_data);
-            float test_cost = node_nn::average_cost(nn, test_data);
-            std::cout << "Iteration " << (i+1)
-                      << ": Train cost = " << train_cost
-                      << ", Test cost = " << test_cost << std::endl;
+    for (int t = 0; t < NUM_STEPS; ++t) {
+        exporter.record(graph, t);
+        sim::step(graph, nn, target, maze);
+
+        if ((t + 1) % 10 == 0) {
+            std::cout << "Step " << (t + 1)
+                      << ": " << graph.nodes.size() << " nodes\n";
         }
     }
+    // Record final state
+    exporter.record(graph, NUM_STEPS);
+    exporter.finish();
 
-    if (node_nn::save_model(model_path, nn)) {
-        std::cout << "Model saved to " << model_path << std::endl;
-    } else {
-        std::cerr << "Failed to save model to " << model_path << std::endl;
-        return 1;
-    }
+    std::cout << "Done. Output written to: " << output_path << "\n";
     return 0;
 }
