@@ -30,7 +30,9 @@ static float clamp(float v, float lo, float hi) {
     return v < lo ? lo : (v > hi ? hi : v);
 }
 
-// Vector from node position to the nearest wall cell centre.
+// Nearest vector from pos to the closest point ON THE SURFACE of any wall cell.
+// Using rectangle boundary (not cell centre) gives physically accurate distances
+// and prevents 1/r^2 from blowing up when a node sits just outside a wall face.
 static Vec2 nearest_wall_vec(const Maze& maze, const Vec2& pos) {
     int cx = static_cast<int>(pos.x);
     int cy = static_cast<int>(pos.y);
@@ -38,33 +40,41 @@ static Vec2 nearest_wall_vec(const Maze& maze, const Vec2& pos) {
     float best_dist2 = std::numeric_limits<float>::max();
     Vec2  best_vec   = {0.0f, 0.0f};
 
-    const int R = 8;  // search radius in cells
+    const int R = 6;  // search radius in cells
     for (int dy = -R; dy <= R; ++dy) {
         for (int dx = -R; dx <= R; ++dx) {
             int gx = cx + dx;
             int gy = cy + dy;
 
-            bool wall;
-            float wx, wy;
+            bool  wall;
+            float cell_x0, cell_y0, cell_x1, cell_y1;
             if (gx < 0 || gy < 0 || gx >= maze.width || gy >= maze.height) {
-                // Clamp out-of-bounds to nearest boundary cell
-                int bx = std::max(0, std::min(gx, maze.width  - 1));
-                int by = std::max(0, std::min(gy, maze.height - 1));
-                wx   = static_cast<float>(bx) + 0.5f;
-                wy   = static_cast<float>(by) + 0.5f;
-                wall = true;
+                // Treat out-of-bounds as wall; clamp cell to grid boundary
+                int bx  = std::max(0, std::min(gx, maze.width  - 1));
+                int by  = std::max(0, std::min(gy, maze.height - 1));
+                cell_x0 = static_cast<float>(bx);
+                cell_y0 = static_cast<float>(by);
+                cell_x1 = cell_x0 + 1.0f;
+                cell_y1 = cell_y0 + 1.0f;
+                wall    = true;
             } else {
-                wall = (maze.grid[gy][gx] == 1);
-                wx   = static_cast<float>(gx) + 0.5f;
-                wy   = static_cast<float>(gy) + 0.5f;
+                wall    = (maze.grid[gy][gx] == 1);
+                cell_x0 = static_cast<float>(gx);
+                cell_y0 = static_cast<float>(gy);
+                cell_x1 = cell_x0 + 1.0f;
+                cell_y1 = cell_y0 + 1.0f;
             }
 
             if (!wall) continue;
 
-            float d2 = (pos.x - wx) * (pos.x - wx) + (pos.y - wy) * (pos.y - wy);
+            // Nearest point on the wall cell's AABB to pos
+            float nx = clamp(pos.x, cell_x0, cell_x1);
+            float ny = clamp(pos.y, cell_y0, cell_y1);
+            float d2 = (pos.x - nx) * (pos.x - nx) + (pos.y - ny) * (pos.y - ny);
+
             if (d2 < best_dist2) {
                 best_dist2 = d2;
-                best_vec   = {wx - pos.x, wy - pos.y};  // node -> wall
+                best_vec   = {nx - pos.x, ny - pos.y};  // node -> wall surface
             }
         }
     }
@@ -86,13 +96,18 @@ std::array<float, node_nn::INPUT_SIZE> compute_inputs(
     const Node& node = graph.nodes[node_idx];
 
     // ---- I[0], I[1]: Pressure vector (wall repulsion) --------------------
+    // v_wall points from node TO nearest wall surface (boundary, not cell centre).
+    // Pressure = -v_hat * COEFF/r^2 (points AWAY from wall).
+    // r is clamped to R_MIN to prevent 1/r^2 diverging when the node is
+    // exactly on or inside a wall boundary (r == 0).
+    constexpr float R_MIN = 0.05f;
     Vec2  v_wall = nearest_wall_vec(maze, node.pos);
-    float r = vec2_length(v_wall);
-    if (r > 1.0e-6f) {
-        // P = -(v/r) * (COEFF / r^2)  -> points AWAY from wall
-        float mag = WALL_PRESSURE_COEFF / (r * r * r);  // 1/r^3 after normalisation
-        inp[0] = -v_wall.x * mag;
-        inp[1] = -v_wall.y * mag;
+    float r      = std::max(vec2_length(v_wall), R_MIN);
+    {
+        float inv_r = 1.0f / r;
+        float mag   = WALL_PRESSURE_COEFF * inv_r * inv_r;  // COEFF / r^2
+        inp[0] = -v_wall.x * inv_r * mag;  // away from wall
+        inp[1] = -v_wall.y * inv_r * mag;
     }
 
     // ---- I[2], I[3]: Target (goal) vector --------------------------------
@@ -257,14 +272,20 @@ void apply_vibe(
     }
 
     // ---- D. Shift ---------------------------------------------------------
+    // Wall-slide: try full movement first, then X-only / Y-only fallbacks so
+    // a node moving diagonally toward a wall slides along it rather than stopping.
     Vec2 V_shift = {output[4] * SHIFT_RATE,
                     output[5] * SHIFT_RATE};
-    Vec2 new_pos = {node.pos.x + V_shift.x,
-                    node.pos.y + V_shift.y};
-    if (!is_wall(maze, new_pos.x, new_pos.y)) {
-        // Re-fetch node reference in case vector was reallocated in Sprout
-        graph.nodes[node_idx].pos = new_pos;
-    }
+    const Vec2& cur = graph.nodes[node_idx].pos;  // re-fetch (may have reallocated)
+
+    Vec2 full_pos = {cur.x + V_shift.x, cur.y + V_shift.y};
+    Vec2 slide_x  = {cur.x + V_shift.x, cur.y};
+    Vec2 slide_y  = {cur.x,              cur.y + V_shift.y};
+
+    if      (!is_wall(maze, full_pos.x, full_pos.y)) graph.nodes[node_idx].pos = full_pos;
+    else if (!is_wall(maze, slide_x.x,  slide_x.y))  graph.nodes[node_idx].pos = slide_x;
+    else if (!is_wall(maze, slide_y.x,  slide_y.y))  graph.nodes[node_idx].pos = slide_y;
+    // else: fully blocked on both axes, don't move
 }
 
 // ---------------------------------------------------------------------------
