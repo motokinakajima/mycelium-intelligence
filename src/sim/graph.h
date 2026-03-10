@@ -28,6 +28,7 @@ constexpr float INITIAL_WEIGHT  = 0.5f;    // initial weight for new edges
 
 // Shift logic
 constexpr float SHIFT_RATE = 0.5f;  // max node movement per step
+constexpr float WALL_AVOIDANCE_STRENGTH = 0.3f;  // heuristic bias away from walls
 
 // Maximum input clamp value (applied before feeding into NN)
 constexpr float INPUT_CLAMP = 5.0f;

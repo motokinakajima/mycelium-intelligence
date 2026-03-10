@@ -30,6 +30,107 @@ static float clamp(float v, float lo, float hi) {
     return v < lo ? lo : (v > hi ? hi : v);
 }
 
+// Add weight to an edge between two nodes, creating it if it doesn't exist.
+// Prevents duplicate edges by checking first.
+static void add_or_strengthen_edge(Graph& graph, int from_idx, int to_idx, float weight_delta) {
+    if (from_idx < 0 || to_idx < 0 || 
+        from_idx >= static_cast<int>(graph.nodes.size()) ||
+        to_idx >= static_cast<int>(graph.nodes.size()))
+        return;
+    
+    Node& from_node = graph.nodes[from_idx];
+    
+    // Look for existing edge
+    for (Edge& e : from_node.edges) {
+        if (e.target_node_idx == to_idx) {
+            // Edge exists, strengthen it
+            e.weight += weight_delta;
+            return;
+        }
+    }
+    
+    // Edge doesn't exist, create it
+    from_node.edges.push_back({to_idx, weight_delta});
+}
+
+// Raycast from start to end, return the furthest valid (non-wall) position.
+// Always checks the entire path for walls, applying a safety margin.
+static Vec2 raycast_to_wall(const Maze& maze, const Vec2& start, const Vec2& end) {
+    constexpr float WALL_SAFETY_MARGIN = 0.4f;
+    constexpr float STEP = 0.05f;  // fine-grained stepping
+    
+    // If start is in a wall, can't move
+    if (is_wall(maze, start.x, start.y))
+        return start;
+    
+    // Calculate direction and total distance
+    float dx = end.x - start.x;
+    float dy = end.y - start.y;
+    float total_dist = std::sqrt(dx * dx + dy * dy);
+    
+    if (total_dist < 1.0e-6f)
+        return start;
+    
+    // Normalized direction vector
+    float dir_x = dx / total_dist;
+    float dir_y = dy / total_dist;
+    
+    // March along the ray
+    float dist = 0.0f;
+    float last_safe_dist = 0.0f;
+    
+    while (dist <= total_dist) {
+        Vec2 pos = {start.x + dir_x * dist, start.y + dir_y * dist};
+        
+        if (is_wall(maze, pos.x, pos.y)) {
+            // Hit wall - return position pulled back by safety margin
+            float safe_dist = std::max(0.0f, last_safe_dist - WALL_SAFETY_MARGIN);
+            return {start.x + dir_x * safe_dist, start.y + dir_y * safe_dist};
+        }
+        
+        last_safe_dist = dist;
+        dist += STEP;
+    }
+    
+    // Entire path is clear - still apply safety margin from endpoint if needed
+    // Check one more time at exact endpoint
+    if (is_wall(maze, end.x, end.y)) {
+        float safe_dist = std::max(0.0f, last_safe_dist - WALL_SAFETY_MARGIN);
+        return {start.x + dir_x * safe_dist, start.y + dir_y * safe_dist};
+    }
+    
+    return end;
+}
+
+// Check if a line segment from p1 to p2 crosses through any wall cells.
+// Returns true if the edge would pass through a wall.
+static bool edge_crosses_wall(const Maze& maze, const Vec2& p1, const Vec2& p2) {
+    constexpr float STEP = 0.1f;
+    
+    float dx = p2.x - p1.x;
+    float dy = p2.y - p1.y;
+    float dist = std::sqrt(dx * dx + dy * dy);
+    
+    if (dist < 1.0e-6f)
+        return false;
+    
+    float dir_x = dx / dist;
+    float dir_y = dy / dist;
+    
+    // Sample points along the edge
+    for (float t = 0.0f; t <= dist; t += STEP) {
+        Vec2 pos = {p1.x + dir_x * t, p1.y + dir_y * t};
+        if (is_wall(maze, pos.x, pos.y))
+            return true;
+    }
+    
+    // Final check at endpoint
+    if (is_wall(maze, p2.x, p2.y))
+        return true;
+    
+    return false;
+}
+
 // Nearest vector from pos to the closest point ON THE SURFACE of any wall cell.
 // Using rectangle boundary (not cell centre) gives physically accurate distances
 // and prevents 1/r^2 from blowing up when a node sits just outside a wall face.
@@ -98,14 +199,15 @@ std::array<float, node_nn::INPUT_SIZE> compute_inputs(
     // ---- I[0], I[1]: Pressure vector (wall repulsion) --------------------
     // v_wall points from node TO nearest wall surface (boundary, not cell centre).
     // Pressure = -v_hat * COEFF/r^2 (points AWAY from wall).
-    // r is clamped to R_MIN to prevent 1/r^2 diverging when the node is
-    // exactly on or inside a wall boundary (r == 0).
-    constexpr float R_MIN = 0.05f;
+    // R_MIN prevents divergence and should match the safety margin used in raycasting.
+    // Magnitude is also clamped to prevent exceeding INPUT_CLAMP before normalization.
+    constexpr float R_MIN = 0.3f;  // increased to avoid divergence zones
     Vec2  v_wall = nearest_wall_vec(maze, node.pos);
     float r      = std::max(vec2_length(v_wall), R_MIN);
     {
         float inv_r = 1.0f / r;
         float mag   = WALL_PRESSURE_COEFF * inv_r * inv_r;  // COEFF / r^2
+        mag = std::min(mag, INPUT_CLAMP);  // clamp magnitude to prevent overflow
         inp[0] = -v_wall.x * inv_r * mag;  // away from wall
         inp[1] = -v_wall.y * inv_r * mag;
     }
@@ -228,12 +330,18 @@ void apply_vibe(
 
         // C2. Spatial-snap / sprout if no angle match and grow is strong enough
         if (!snapped && grow_len > THRESHOLD_SPROUT) {
-            Vec2 P_new = {node.pos.x + V_grow.x,
-                          node.pos.y + V_grow.y};
+            Vec2 P_target = {node.pos.x + V_grow.x,
+                            node.pos.y + V_grow.y};
 
-            // Cancel if destination is a wall
-            if (!is_wall(maze, P_new.x, P_new.y)) {
-
+            // Raycast to find the furthest valid position (stops at walls)
+            Vec2 P_new = raycast_to_wall(maze, node.pos, P_target);
+            
+            // Only proceed if we moved a meaningful distance
+            float dx_moved = P_new.x - node.pos.x;
+            float dy_moved = P_new.y - node.pos.y;
+            float dist_moved = std::sqrt(dx_moved * dx_moved + dy_moved * dy_moved);
+            
+            if (dist_moved > 0.1f) {  // minimum movement threshold
                 // Check for existing nodes within SNAP_RADIUS
                 int nearest_idx = -1;
                 float nearest_d2 = SNAP_RADIUS * SNAP_RADIUS;
@@ -250,22 +358,25 @@ void apply_vibe(
                 }
 
                 if (nearest_idx >= 0) {
-                    // Anastomosis: connect to existing nearby node
-                    // Check we don't already have this edge
-                    bool exists = false;
-                    for (const Edge& e : node.edges)
-                        if (e.target_node_idx == nearest_idx) { exists = true; break; }
-                    if (!exists)
-                        node.edges.push_back({nearest_idx, INITIAL_WEIGHT});
+                    // Anastomosis: connect to existing nearby node (bidirectional)
+                    // But first check if the edge would cross through walls
+                    const Vec2& target_pos = graph.nodes[nearest_idx].pos;
+                    if (!edge_crosses_wall(maze, node.pos, target_pos)) {
+                        // Edge is valid - strengthen or create it
+                        add_or_strengthen_edge(graph, node_idx, nearest_idx, INITIAL_WEIGHT);
+                        add_or_strengthen_edge(graph, nearest_idx, node_idx, INITIAL_WEIGHT);
+                    }
                 } else {
-                    // Sprout: create a brand-new node
+                    // Sprout: create a brand-new node (bidirectional connection)
                     Node new_node;
                     new_node.pos     = P_new;
                     new_node.is_dead = false;
                     graph.nodes.push_back(new_node);
                     int new_idx = static_cast<int>(graph.nodes.size()) - 1;
                     // Note: node reference is now invalid (vector may have reallocated)
-                    graph.nodes[node_idx].edges.push_back({new_idx, INITIAL_WEIGHT});
+                    // Create bidirectional edges (new node has no edges yet, so just add)
+                    add_or_strengthen_edge(graph, node_idx, new_idx, INITIAL_WEIGHT);
+                    add_or_strengthen_edge(graph, new_idx, node_idx, INITIAL_WEIGHT);
                 }
             }
         }
@@ -274,18 +385,60 @@ void apply_vibe(
     // ---- D. Shift ---------------------------------------------------------
     // Wall-slide: try full movement first, then X-only / Y-only fallbacks so
     // a node moving diagonally toward a wall slides along it rather than stopping.
-    Vec2 V_shift = {output[4] * SHIFT_RATE,
-                    output[5] * SHIFT_RATE};
+    // Use raycast to prevent nodes from moving into or too close to walls.
+    // Add heuristic: bias movement away from walls using wall pressure.
+    
+    // Get wall pressure for this node
+    Vec2 v_wall = nearest_wall_vec(maze, graph.nodes[node_idx].pos);
+    float r = std::max(vec2_length(v_wall), 0.3f);
+    Vec2 wall_push = {0.0f, 0.0f};
+    {
+        float inv_r = 1.0f / r;
+        float mag = WALL_PRESSURE_COEFF * inv_r * inv_r;
+        mag = std::min(mag, INPUT_CLAMP);
+        wall_push.x = -v_wall.x * inv_r * mag;
+        wall_push.y = -v_wall.y * inv_r * mag;
+    }
+    
+    // Combine NN output with wall-avoidance heuristic
+    Vec2 V_shift = {
+        output[4] * SHIFT_RATE + wall_push.x * WALL_AVOIDANCE_STRENGTH,
+        output[5] * SHIFT_RATE + wall_push.y * WALL_AVOIDANCE_STRENGTH
+    };
     const Vec2& cur = graph.nodes[node_idx].pos;  // re-fetch (may have reallocated)
 
-    Vec2 full_pos = {cur.x + V_shift.x, cur.y + V_shift.y};
-    Vec2 slide_x  = {cur.x + V_shift.x, cur.y};
-    Vec2 slide_y  = {cur.x,              cur.y + V_shift.y};
-
-    if      (!is_wall(maze, full_pos.x, full_pos.y)) graph.nodes[node_idx].pos = full_pos;
-    else if (!is_wall(maze, slide_x.x,  slide_x.y))  graph.nodes[node_idx].pos = slide_x;
-    else if (!is_wall(maze, slide_y.x,  slide_y.y))  graph.nodes[node_idx].pos = slide_y;
-    // else: fully blocked on both axes, don't move
+    Vec2 target_pos = {cur.x + V_shift.x, cur.y + V_shift.y};
+    Vec2 safe_pos = raycast_to_wall(maze, cur, target_pos);
+    
+    // If raycast found a valid position different from current, move there
+    float dx_move = safe_pos.x - cur.x;
+    float dy_move = safe_pos.y - cur.y;
+    if (dx_move * dx_move + dy_move * dy_move > 1.0e-6f) {
+        graph.nodes[node_idx].pos = safe_pos;
+    } else {
+        // Try sliding along walls if direct movement failed
+        Vec2 slide_x = {cur.x + V_shift.x, cur.y};
+        Vec2 slide_y = {cur.x, cur.y + V_shift.y};
+        
+        Vec2 safe_x = raycast_to_wall(maze, cur, slide_x);
+        Vec2 safe_y = raycast_to_wall(maze, cur, slide_y);
+        
+        float dx_x = safe_x.x - cur.x;
+        float dy_x = safe_x.y - cur.y;
+        float dx_y = safe_y.x - cur.x;
+        float dy_y = safe_y.y - cur.y;
+        
+        float dist_x = dx_x * dx_x + dy_x * dy_x;
+        float dist_y = dx_y * dx_y + dy_y * dy_y;
+        
+        // Choose the slide direction that moves furthest
+        if (dist_x > 1.0e-6f && dist_x >= dist_y) {
+            graph.nodes[node_idx].pos = safe_x;
+        } else if (dist_y > 1.0e-6f) {
+            graph.nodes[node_idx].pos = safe_y;
+        }
+        // else: fully blocked, don't move
+    }
 }
 
 // ---------------------------------------------------------------------------

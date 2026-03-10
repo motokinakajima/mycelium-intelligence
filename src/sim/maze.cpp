@@ -77,10 +77,8 @@ Maze generate_maze(int cols, int rows, unsigned seed) {
         if (!moved) stk.pop();
     }
 
-    // Entry: top-left passage  (row 1, col 0)
-    // Exit:  bottom-right passage (row H-2, col W-1)
-    maze.grid[1][0]     = 0;
-    maze.grid[H - 2][W - 1] = 0;
+    // No longer carving edge openings - maze is fully enclosed
+    // Entry and exit are now inside the maze
 
     return maze;
 }

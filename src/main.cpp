@@ -17,6 +17,7 @@
 #include "export.h"   // sim::SimExporter
 
 #include <iostream>
+#include <filesystem>
 
 int main() {
     // ---- Maze setup ---------------------------------------------------
@@ -27,11 +28,10 @@ int main() {
     sim::Maze maze = sim::generate_maze(MAZE_COLS, MAZE_ROWS, MAZE_SEED);
     std::cout << "Maze: " << maze.width << " x " << maze.height << " cells\n";
 
-    // Entry: left opening carved at (col=0, row=1)  -> centre (0.5, 1.5)
-    // Exit:  right opening at (col=W-1, row=H-2)   -> centre (W-0.5, H-1.5)
-    const sim::Vec2 start  = { 0.5f,
-                               1.5f };
-    const sim::Vec2 target = { static_cast<float>(maze.width)  - 0.5f,
+    // Entry: enclosed start point at cell (1, 1) -> center (1.5, 1.5)
+    // Exit:  enclosed end point at cell (W-2, H-2) -> center (W-1.5, H-1.5)
+    const sim::Vec2 start  = { 1.5f, 1.5f };
+    const sim::Vec2 target = { static_cast<float>(maze.width)  - 1.5f,
                                static_cast<float>(maze.height) - 1.5f };
 
     std::cout << "Start:  (" << start.x  << ", " << start.y  << ")\n";
@@ -80,6 +80,7 @@ int main() {
     exporter.record(graph, NUM_STEPS);
     exporter.finish();
 
-    std::cout << "Done. Output written to: " << output_path << "\n";
+    std::cout << "Done. Output written to: " 
+              << std::filesystem::absolute(output_path).string() << "\n";
     return 0;
 }
