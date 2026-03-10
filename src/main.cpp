@@ -15,11 +15,52 @@
 #include "graph.h"    // sim::Graph, sim::step, sim::cleanup_dead
 #include "maze.h"     // sim::generate_maze, sim::Maze
 #include "export.h"   // sim::SimExporter
+#include "config.h"   // sim::load_config
 
 #include <iostream>
 #include <filesystem>
 
-int main() {
+int main(int argc, char* argv[]) {
+    // Ensure output is not buffered
+    std::cout.setf(std::ios::unitbuf);
+    
+    // ---- Load hyperparameters from file -------------------------------
+    // Check for command-line argument first
+    std::string config_path;
+    if (argc > 1) {
+        config_path = argv[1];
+        std::cout << "Using config file from argument: " << config_path << "\n";
+    } else {
+        // Try both locations: project root (when run from root) and parent dir (when run from build dir)
+        std::vector<std::string> config_paths = {
+            "hyperparameters.txt",           // if running from project root
+            "../hyperparameters.txt"         // if running from cmake-build-debug
+        };
+        
+        bool found = false;
+        for (const auto& path : config_paths) {
+            if (std::filesystem::exists(path)) {
+                config_path = path;
+                found = true;
+                break;
+            }
+        }
+        
+        if (!found) {
+            std::cout << "Config file not found in default locations, using defaults.\n";
+            sim::set_default_config();
+            config_path = "";
+        }
+    }
+    
+    if (!config_path.empty()) {
+        std::cout << "Loading config from: " << config_path << "\n";
+        if (!sim::load_config(config_path)) {
+            std::cout << "Failed to load config, using defaults.\n";
+            sim::set_default_config();
+        }
+    }
+    
     // ---- Maze setup ---------------------------------------------------
     constexpr int MAZE_COLS = 5;   // "room" columns  -> grid width  = 11
     constexpr int MAZE_ROWS = 5;   // "room" rows     -> grid height = 11
@@ -53,28 +94,29 @@ int main() {
     //   - O[6] (Apoptosis) starts close to -1  -> nodes won't self-destruct
     //   - O[0..1] (Grow)   biased positive     -> encourage outward growth
     // In a real run these biases are learned from training data.
-    nn.b2[6] = -4.0f;   // tanh(-4) ≈ -0.999 -> apoptosis suppressed
-    nn.b2[0] =  1.5f;   // nudge Grow X positive
-    nn.b2[1] =  1.5f;   // nudge Grow Y positive
-
+    nn.b2[6] = -5.0f;   // tanh(-5) ≈ -0.9999 -> apoptosis strongly suppressed
+    nn.b2[0] =  2.0f;   // nudge Grow X positive (tanh(2) ≈ 0.964)
+    nn.b2[1] =  2.0f;   // nudge Grow Y positive
+    
     std::cout << "NeuralNetwork: random weights (INPUT=" << node_nn::INPUT_SIZE
               << ", HIDDEN=" << node_nn::HIDDEN_SIZE
               << ", OUTPUT=" << node_nn::OUTPUT_SIZE << ")\n";
 
     // ---- Run simulation ----------------------------------------------
-    constexpr int NUM_STEPS        = 100;
+    constexpr int NUM_STEPS        = 300;  // Increased for longer simulation
     const std::string output_path  = "sim_output.json";
 
     sim::SimExporter exporter(output_path, maze);
 
     for (int t = 0; t < NUM_STEPS; ++t) {
         exporter.record(graph, t);
-        sim::step(graph, nn, target, maze);
-
-        if ((t + 1) % 10 == 0) {
-            std::cout << "Step " << (t + 1)
-                      << ": " << graph.nodes.size() << " nodes\n";
+        
+        if ((t + 1) % 10 == 0 || t < 5) {
+            std::cout << "\n=== Step " << (t + 1) << " ===\n";
+            std::cout << "Nodes: " << graph.nodes.size() << "\n";
         }
+        
+        sim::step(graph, nn, target, maze);
     }
     // Record final state
     exporter.record(graph, NUM_STEPS);

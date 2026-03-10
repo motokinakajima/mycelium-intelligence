@@ -1,37 +1,15 @@
 #pragma once
 
 #include "node_nn/nn.h"
+#include "config.h"  // Hyperparameters loaded from external file
 #include <array>
 #include <vector>
 
 namespace sim {
 
 // ---------------------------------------------------------------------------
-// Hyperparameters
+// Hyperparameters are now defined in config.h/cpp and loaded from file
 // ---------------------------------------------------------------------------
-
-// Input computation
-constexpr float WALL_PRESSURE_COEFF = 10.0f;  // coefficient for 1/r^2 wall repulsion
-constexpr float CROWD_RADIUS        = 5.0f;   // radius for crowdedness computation
-
-// Output thresholds & multipliers
-constexpr float THRESHOLD_APOPTOSIS = 0.8f;   // tanh > 0.8 => node dies
-constexpr float THRESHOLD_DEAD_EDGE = 0.1f;   // edges below this weight are pruned
-constexpr float PRUNE_EXPONENT      = 3.0f;   // sharpness of prune cone
-constexpr float GROW_MULTIPLIER     = 1.5f;   // grow vector length multiplier
-
-// Snap logic
-constexpr float SNAP_ANGLE_COS  = 0.866f;  // cos(30 deg) for angle-snap reinforcement
-constexpr float THRESHOLD_SPROUT = 0.5f;   // minimum grow strength to sprout new node
-constexpr float SNAP_RADIUS     = 3.0f;    // anastomosis snap radius
-constexpr float INITIAL_WEIGHT  = 0.5f;    // initial weight for new edges
-
-// Shift logic
-constexpr float SHIFT_RATE = 0.5f;  // max node movement per step
-constexpr float WALL_AVOIDANCE_STRENGTH = 0.3f;  // heuristic bias away from walls
-
-// Maximum input clamp value (applied before feeding into NN)
-constexpr float INPUT_CLAMP = 5.0f;
 
 // ---------------------------------------------------------------------------
 // Data structures

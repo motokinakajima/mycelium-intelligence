@@ -387,3 +387,19 @@ cmake -B cmake-build-debug -DCMAKE_CXX_COMPILER=g++
 - Money, N. P. (2021). Hyphal and mycelial mechanics. *Fungal Biology Reviews*.
 
 ---
+
+## License
+
+MIT License - See LICENSE file for details
+
+## Contributing
+
+Contributions welcome! Please:
+1. Fork the repository
+2. Create a feature branch
+3. Add tests for new functionality
+4. Submit a pull request with detailed description
+
+## Contact
+
+For questions or collaboration: [Your contact info here]

@@ -1,4 +1,5 @@
 set(SIM_SOURCES
+        config.cpp
         graph.cpp
         maze.cpp
         export.cpp

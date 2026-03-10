@@ -1,0 +1,39 @@
+# Mycelium Intelligence Hyperparameters
+# Format: NAME = VALUE  (spaces are optional)
+# Lines starting with # are comments
+
+# --- Input Computation ---
+WALL_PRESSURE_COEFF = 10.0
+CROWD_RADIUS = 5.0
+R_MIN = 0.3
+
+# --- Output Thresholds & Multipliers ---
+THRESHOLD_APOPTOSIS = 0.8
+THRESHOLD_DEAD_EDGE = 0.1
+PRUNE_EXPONENT = 3.0
+GROW_MULTIPLIER = 2.5
+
+# --- Snap Logic ---
+SNAP_ANGLE_COS = 0.866
+THRESHOLD_SPROUT = 0.3
+SNAP_RADIUS = 3.0
+INITIAL_WEIGHT = 0.5
+
+# --- Shift Logic ---
+SHIFT_RATE = 0.5
+WALL_AVOIDANCE_STRENGTH = 0.3
+WALL_STUCK_THRESHOLD = 0.4
+WALL_UNSTUCK_FORCE = 1.0
+
+# --- Input/Output Limits ---
+INPUT_CLAMP = 5.0
+
+# --- Raycast & Collision Detection ---
+WALL_SAFETY_MARGIN = 0.03
+RAYCAST_STEP = 0.05
+EDGE_CHECK_STEP = 0.1
+MIN_SPROUT_DISTANCE = 0.03
+
+# --- Debug Flags (1 = on, 0 = off) ---
+DEBUG_GROW = 0
+DEBUG_SHIFT = 0
