@@ -105,29 +105,195 @@ static Vec2 raycast_to_wall(const Maze& maze, const Vec2& start, const Vec2& end
 // Check if a line segment from p1 to p2 crosses through any wall cells.
 // Returns true if the edge would pass through a wall.
 static bool edge_crosses_wall(const Maze& maze, const Vec2& p1, const Vec2& p2) {
-    // EDGE_CHECK_STEP is now loaded from config
-    
-    float dx = p2.x - p1.x;
-    float dy = p2.y - p1.y;
-    float dist = std::sqrt(dx * dx + dy * dy);
-    
-    if (dist < 1.0e-6f)
-        return false;
-    
-    float dir_x = dx / dist;
-    float dir_y = dy / dist;
-    
-    // Sample points along the edge
-    for (float t = 0.0f; t <= dist; t += EDGE_CHECK_STEP) {
-        Vec2 pos = {p1.x + dir_x * t, p1.y + dir_y * t};
-        if (is_wall(maze, pos.x, pos.y))
+    auto is_wall_cell = [&](int x, int y) {
+        if (x < 0 || y < 0 || x >= maze.width || y >= maze.height) {
             return true;
-    }
-    
-    // Final check at endpoint
-    if (is_wall(maze, p2.x, p2.y))
+        }
+        return maze.grid[y][x] == 1;
+    };
+
+    int x0 = static_cast<int>(std::floor(p1.x));
+    int y0 = static_cast<int>(std::floor(p1.y));
+    int x1 = static_cast<int>(std::floor(p2.x));
+    int y1 = static_cast<int>(std::floor(p2.y));
+
+    if (is_wall_cell(x0, y0) || is_wall_cell(x1, y1)) {
         return true;
-    
+    }
+
+    int dx = std::abs(x1 - x0);
+    int dy = std::abs(y1 - y0);
+    int sx = (x0 < x1) ? 1 : -1;
+    int sy = (y0 < y1) ? 1 : -1;
+    int err = dx - dy;
+
+    while (true) {
+        if (is_wall_cell(x0, y0)) {
+            return true;
+        }
+        if (x0 == x1 && y0 == y1) {
+            break;
+        }
+
+        int prev_x = x0;
+        int prev_y = y0;
+        int e2 = 2 * err;
+
+        if (e2 > -dy) {
+            err -= dy;
+            x0 += sx;
+        }
+        if (e2 < dx) {
+            err += dx;
+            y0 += sy;
+        }
+
+        // Supercover-style corner check: catch diagonal corner clipping.
+        if (x0 != prev_x && y0 != prev_y) {
+            if (is_wall_cell(prev_x, y0) || is_wall_cell(x0, prev_y)) {
+                return true;
+            }
+        }
+    }
+
+    return false;
+}
+
+static bool merge_one_close_pair(Graph& graph, const Maze& maze, float distance_threshold) {
+    if (distance_threshold <= 0.0f) {
+        return false;
+    }
+
+    const float threshold2 = distance_threshold * distance_threshold;
+    const int node_count = static_cast<int>(graph.nodes.size());
+
+    for (int i = 0; i < node_count; ++i) {
+        const Node& a = graph.nodes[i];
+        if (a.is_dead || a.is_pinned || a.is_source) continue;
+
+        for (int j = i + 1; j < node_count; ++j) {
+            const Node& b = graph.nodes[j];
+            if (b.is_dead || b.is_pinned || b.is_source) continue;
+
+            const float dx = a.pos.x - b.pos.x;
+            const float dy = a.pos.y - b.pos.y;
+            if (dx * dx + dy * dy >= threshold2) continue;
+
+            // Preserve BOTH incident edge sets:
+            // - outgoing from i/j
+            // - incoming to i/j from other nodes
+            const int old_node_count = node_count;
+            std::vector<float> i_incident(old_node_count, 0.0f);
+            std::vector<float> j_incident(old_node_count, 0.0f);
+
+            // Outgoing from i/j
+            for (const Edge& e : graph.nodes[i].edges) {
+                if (e.weight <= 0.0f) continue;
+                int k = e.target_node_idx;
+                if (k < 0 || k >= old_node_count || k == i || k == j) continue;
+                i_incident[k] = std::max(i_incident[k], e.weight);
+            }
+            for (const Edge& e : graph.nodes[j].edges) {
+                if (e.weight <= 0.0f) continue;
+                int k = e.target_node_idx;
+                if (k < 0 || k >= old_node_count || k == i || k == j) continue;
+                j_incident[k] = std::max(j_incident[k], e.weight);
+            }
+
+            // Incoming to i/j (i.e. outgoing from k)
+            for (int k = 0; k < old_node_count; ++k) {
+                if (k == i || k == j) continue;
+                if (graph.nodes[k].is_dead) continue;
+                for (const Edge& e : graph.nodes[k].edges) {
+                    if (e.weight <= 0.0f) continue;
+                    if (e.target_node_idx == i) {
+                        i_incident[k] = std::max(i_incident[k], e.weight);
+                    } else if (e.target_node_idx == j) {
+                        j_incident[k] = std::max(j_incident[k], e.weight);
+                    }
+                }
+            }
+
+            auto retained_weight_at = [&](const Vec2& pos) {
+                if (is_wall(maze, pos.x, pos.y)) {
+                    return -1.0f;
+                }
+                float retained = 0.0f;
+                for (int k = 0; k < old_node_count; ++k) {
+                    if (k == i || k == j) continue;
+                    if (graph.nodes[k].is_dead) continue;
+                    const float merged_weight = i_incident[k] + j_incident[k];
+                    if (merged_weight <= 0.0f) continue;
+                    if (!edge_crosses_wall(maze, pos, graph.nodes[k].pos)) {
+                        retained += merged_weight;
+                    }
+                }
+                return retained;
+            };
+
+            float total_incident_weight = 0.0f;
+            for (int k = 0; k < old_node_count; ++k) {
+                if (k == i || k == j) continue;
+                if (graph.nodes[k].is_dead) continue;
+                total_incident_weight += i_incident[k] + j_incident[k];
+            }
+
+            const Vec2 mid = {(a.pos.x + b.pos.x) * 0.5f, (a.pos.y + b.pos.y) * 0.5f};
+            const Vec2 candidates[3] = {mid, a.pos, b.pos};
+
+            float best_retained = -1.0f;
+            Vec2 best_pos = mid;
+            for (const Vec2& c : candidates) {
+                const float retained = retained_weight_at(c);
+                if (retained > best_retained) {
+                    best_retained = retained;
+                    best_pos = c;
+                }
+            }
+
+            if (best_retained < 0.0f) {
+                continue;
+            }
+            if (total_incident_weight > 1.0e-6f) {
+                const float retain_ratio = best_retained / total_incident_weight;
+                if (retain_ratio < FUSION_MIN_RETAIN_RATIO) {
+                    continue;
+                }
+            }
+
+            Node merged;
+            merged.pos = best_pos;
+            merged.is_dead = false;
+            merged.is_pinned = false;
+            merged.is_source = false;
+            merged.energy = graph.nodes[i].energy + graph.nodes[j].energy;
+            merged.low_energy_steps = std::min(graph.nodes[i].low_energy_steps,
+                                               graph.nodes[j].low_energy_steps);
+
+            graph.nodes.push_back(merged);
+            const int merged_idx = static_cast<int>(graph.nodes.size()) - 1;
+
+            for (int k = 0; k < old_node_count; ++k) {
+                if (k == i || k == j) continue;
+                if (graph.nodes[k].is_dead) continue;
+
+                float merged_weight = i_incident[k] + j_incident[k];
+                if (merged_weight <= 0.0f) continue;
+
+                if (edge_crosses_wall(maze, graph.nodes[merged_idx].pos, graph.nodes[k].pos)) {
+                    continue;
+                }
+
+                // Keep graph effectively undirected by reconnecting both directions.
+                add_or_strengthen_edge(graph, merged_idx, k, merged_weight);
+                add_or_strengthen_edge(graph, k, merged_idx, merged_weight);
+            }
+
+            graph.nodes[i].is_dead = true;
+            graph.nodes[j].is_dead = true;
+            return true;
+        }
+    }
     return false;
 }
 
@@ -212,12 +378,41 @@ std::array<float, node_nn::INPUT_SIZE> compute_inputs(
         inp[1] = -v_wall.y * inv_r * mag;
     }
 
-    // ---- I[2], I[3]: Target (goal) vector --------------------------------
-    Vec2 v_target = {target.x - node.pos.x, target.y - node.pos.y};
-    float td = vec2_length(v_target);
-    if (td > 1.0e-6f) {
-        inp[2] = v_target.x / td;
-        inp[3] = v_target.y / td;
+    // ---- I[2], I[3]: Target / nutrient-source guidance --------------------
+    Vec2 v_goal = {target.x - node.pos.x, target.y - node.pos.y};
+    Vec2 v_goal_n = vec2_normalize(v_goal);
+
+    Vec2 v_source_n = {0.0f, 0.0f};
+    bool has_source_dir = false;
+    if (TARGET_USE_NEAREST_SOURCE) {
+        float best_d2 = std::numeric_limits<float>::max();
+        for (int i = 0; i < static_cast<int>(graph.nodes.size()); ++i) {
+            if (i == node_idx) continue;
+            const Node& cand = graph.nodes[i];
+            if (cand.is_dead || !cand.is_source) continue;
+            const float dx = cand.pos.x - node.pos.x;
+            const float dy = cand.pos.y - node.pos.y;
+            const float d2 = dx * dx + dy * dy;
+            if (d2 < best_d2) {
+                best_d2 = d2;
+                v_source_n = vec2_normalize({dx, dy});
+                has_source_dir = true;
+            }
+        }
+    }
+
+    if (has_source_dir) {
+        const float blend = clamp(TARGET_SOURCE_BLEND, 0.0f, 1.0f);
+        Vec2 v_mix = {
+            (1.0f - blend) * v_goal_n.x + blend * v_source_n.x,
+            (1.0f - blend) * v_goal_n.y + blend * v_source_n.y
+        };
+        Vec2 v_target_n = vec2_normalize(v_mix);
+        inp[2] = v_target_n.x;
+        inp[3] = v_target_n.y;
+    } else {
+        inp[2] = v_goal_n.x;
+        inp[3] = v_goal_n.y;
     }
 
     // ---- I[4], I[5]: Flow COM vector -------------------------------------
@@ -238,8 +433,8 @@ std::array<float, node_nn::INPUT_SIZE> compute_inputs(
     inp[4] = flow.x;
     inp[5] = flow.y;
 
-    // ---- I[6]: Importance (total edge weight) ----------------------------
-    inp[6] = weight_sum;
+    // ---- I[6]: Importance (edge weight sum or energy) --------------------
+    inp[6] = ENERGY_USE_AS_IMPORTANCE ? (node.energy * ENERGY_IMPORTANCE_SCALE) : weight_sum;
 
     // ---- I[7]: Crowdedness (neighbours within CROWD_RADIUS) --------------
     float crowd = 0.0f;
@@ -272,12 +467,6 @@ void apply_vibe(
 {
     Node& node = graph.nodes[node_idx];
 
-    // ---- A. Apoptosis -----------------------------------------------------
-    if (output[6] > THRESHOLD_APOPTOSIS) {
-        node.is_dead = true;
-        return;  // skip remaining logic
-    }
-
     // ---- B. Prune ---------------------------------------------------------
     Vec2 V_prune = {output[2], output[3]};
     float prune_len = vec2_length(V_prune);
@@ -291,7 +480,7 @@ void apply_vibe(
             Vec2 ev = {tgt.pos.x - node.pos.x, tgt.pos.y - node.pos.y};
             Vec2 ev_n = vec2_normalize(ev);
             float dot_val = vec2_dot(ev_n, V_prune_n);
-            if (dot_val > 0.0f) {
+            if (dot_val > 0.0f && !tgt.is_source) {
                 float reduction = prune_len *
                     std::pow(dot_val, PRUNE_EXPONENT);
                 e.weight -= reduction;
@@ -329,11 +518,21 @@ void apply_vibe(
             Vec2 ev_n = vec2_normalize(ev);
             float cos_theta = vec2_dot(ev_n, V_grow_n);
             if (cos_theta > SNAP_ANGLE_COS) {
-                e.weight += grow_len * cos_theta;
-                snapped = true;
-                if (DEBUG_GROW) {
-                    std::cout << "[DEBUG]   -> Angle-snapped to edge " << e.target_node_idx 
-                              << " (cos=" << cos_theta << ", weight+=" << (grow_len * cos_theta) << ")\n";
+                const float desired_delta = grow_len * cos_theta;
+                float applied_delta = desired_delta;
+                if (ENERGY_COST_EDGE_THICKEN > 1.0e-6f) {
+                    const float affordable = std::max(0.0f, node.energy) / ENERGY_COST_EDGE_THICKEN;
+                    applied_delta = std::min(desired_delta, affordable);
+                }
+
+                if (applied_delta > 1.0e-6f) {
+                    e.weight += applied_delta;
+                    node.energy -= applied_delta * ENERGY_COST_EDGE_THICKEN;
+                    snapped = true;
+                    if (DEBUG_GROW) {
+                        std::cout << "[DEBUG]   -> Angle-snapped to edge " << e.target_node_idx
+                                  << " (cos=" << cos_theta << ", weight+=" << applied_delta << ")\n";
+                    }
                 }
             }
         }
@@ -384,10 +583,12 @@ void apply_vibe(
                     // Anastomosis: connect to existing nearby node (bidirectional)
                     // But first check if the edge would cross through walls
                     const Vec2& target_pos = graph.nodes[nearest_idx].pos;
-                    if (!edge_crosses_wall(maze, node.pos, target_pos)) {
+                    if (!edge_crosses_wall(maze, node.pos, target_pos) &&
+                        node.energy >= ENERGY_COST_NEW_CONNECTION) {
                         // Edge is valid - strengthen or create it
                         add_or_strengthen_edge(graph, node_idx, nearest_idx, INITIAL_WEIGHT);
                         add_or_strengthen_edge(graph, nearest_idx, node_idx, INITIAL_WEIGHT);
+                        node.energy -= ENERGY_COST_NEW_CONNECTION;
                         if (DEBUG_GROW) {
                             std::cout << "[DEBUG]   -> Anastomosis to node " << nearest_idx << "\n";
                         }
@@ -396,18 +597,29 @@ void apply_vibe(
                     }
                 } else {
                     // Sprout: create a brand-new node (bidirectional connection)
-                    Node new_node;
-                    new_node.pos     = P_new;
-                    new_node.is_dead = false;
-                    graph.nodes.push_back(new_node);
-                    int new_idx = static_cast<int>(graph.nodes.size()) - 1;
-                    // Note: node reference is now invalid (vector may have reallocated)
-                    // Create bidirectional edges (new node has no edges yet, so just add)
-                    add_or_strengthen_edge(graph, node_idx, new_idx, INITIAL_WEIGHT);
-                    add_or_strengthen_edge(graph, new_idx, node_idx, INITIAL_WEIGHT);
-                    if (DEBUG_GROW) {
-                        std::cout << "[DEBUG]   -> NEW NODE created at (" << P_new.x << ", " << P_new.y 
-                                  << "), idx=" << new_idx << "\n";
+                    const float sprout_energy_cost = ENERGY_COST_SPROUT + ENERGY_CHILD_INITIAL + ENERGY_COST_NEW_CONNECTION;
+                    if (node.energy < sprout_energy_cost) {
+                        if (DEBUG_GROW) {
+                            std::cout << "[DEBUG]   -> Sprout blocked (insufficient energy)\n";
+                        }
+                    } else {
+                        Node new_node;
+                        new_node.pos     = P_new;
+                        new_node.is_dead = false;
+                        new_node.is_pinned = false;
+                        new_node.is_source = false;
+                        new_node.energy = ENERGY_CHILD_INITIAL;
+                        graph.nodes.push_back(new_node);
+                        int new_idx = static_cast<int>(graph.nodes.size()) - 1;
+                        // Note: node reference is now invalid (vector may have reallocated)
+                        // Create bidirectional edges (new node has no edges yet, so just add)
+                        add_or_strengthen_edge(graph, node_idx, new_idx, INITIAL_WEIGHT);
+                        add_or_strengthen_edge(graph, new_idx, node_idx, INITIAL_WEIGHT);
+                        graph.nodes[node_idx].energy -= sprout_energy_cost;
+                        if (DEBUG_GROW) {
+                            std::cout << "[DEBUG]   -> NEW NODE created at (" << P_new.x << ", " << P_new.y 
+                                      << "), idx=" << new_idx << "\n";
+                        }
                     }
                 }
             } else if (DEBUG_GROW) {
@@ -419,6 +631,10 @@ void apply_vibe(
     }
 
     // ---- D. Shift ---------------------------------------------------------
+    if (node.is_pinned) {
+        return;
+    }
+
     // Wall-slide: try full movement first, then X-only / Y-only fallbacks so
     // a node moving diagonally toward a wall slides along it rather than stopping.
     // Use raycast to prevent nodes from moving into or too close to walls.
@@ -548,7 +764,9 @@ void step(
     const Vec2&                   target,
     const Maze&                   maze)
 {
-    int n = static_cast<int>(graph.nodes.size());  // fixed: don't process new sprouts
+    static int simulation_step = 0;
+    const int n = static_cast<int>(graph.nodes.size());
+
     for (int i = 0; i < n; ++i) {
         if (graph.nodes[i].is_dead) continue;
         auto input  = compute_inputs(graph, i, target, maze);
@@ -556,14 +774,106 @@ void step(
         node_nn::forward(nn, input, output);
         apply_vibe(graph, i, output, maze);
     }
-    cleanup_dead(graph);
+
+    // Energy rules (fully local, mass-conserving weighted diffusion).
+    const int m = static_cast<int>(graph.nodes.size());
+    std::vector<float> old_energy(static_cast<size_t>(m), 0.0f);
+    for (int i = 0; i < m; ++i) {
+        old_energy[i] = graph.nodes[i].energy;
+    }
+
+    const float alpha = clamp(ENERGY_DIFFUSION_ALPHA, 0.0f, 1.0f);
+    std::vector<float> next_energy(static_cast<size_t>(m), 0.0f);
+
+    // 1) Keep local remainder: (1 - alpha) * E_i
+    for (int i = 0; i < m; ++i) {
+        if (graph.nodes[i].is_dead) continue;
+        const float outflow = old_energy[i] * alpha;
+        next_energy[i] += (old_energy[i] - outflow);
+    }
+
+    // 2) Distribute outflow to neighbors in proportion to edge weights.
+    for (int i = 0; i < m; ++i) {
+        if (graph.nodes[i].is_dead) continue;
+
+        const float outflow = old_energy[i] * alpha;
+        float total_weight = 0.0f;
+
+        for (const Edge& e : graph.nodes[i].edges) {
+            if (e.weight <= 0.0f) continue;
+            const int j = e.target_node_idx;
+            if (j < 0 || j >= m) continue;
+            if (graph.nodes[j].is_dead) continue;
+            total_weight += e.weight;
+        }
+
+        if (total_weight <= 1.0e-6f) continue;
+
+        for (const Edge& e : graph.nodes[i].edges) {
+            if (e.weight <= 0.0f) continue;
+            const int j = e.target_node_idx;
+            if (j < 0 || j >= m) continue;
+            if (graph.nodes[j].is_dead) continue;
+
+            const float flow_to_j = outflow * (e.weight / total_weight);
+            next_energy[j] += flow_to_j;
+        }
+    }
+
+    const bool enable_energy_apoptosis = simulation_step > static_cast<int>(APOPTOSIS_WARMUP_STEPS);
+
+    // 3) Apply maintenance, source overwrite, clamp.
+    for (int i = 0; i < m; ++i) {
+        if (graph.nodes[i].is_dead) continue;
+
+        float new_e = next_energy[i] - ENERGY_MAINTENANCE_COST;
+        if (graph.nodes[i].is_source) {
+            new_e = ENERGY_SOURCE_VALUE;
+        }
+
+        graph.nodes[i].energy = clamp(new_e, ENERGY_MIN_CLAMP, ENERGY_MAX_CLAMP);
+    }
+
+    // 4) Energy-based apoptosis after warmup.
+    if (enable_energy_apoptosis) {
+        for (int i = 0; i < m; ++i) {
+            if (graph.nodes[i].is_dead || graph.nodes[i].is_source) continue;
+            if (graph.nodes[i].energy <= NN_APOPTOSIS_ENERGY_GATE) {
+                graph.nodes[i].is_dead = true;
+
+                for (Edge& e : graph.nodes[i].edges) {
+                    e.weight = -1.0f;
+                }
+
+                for (int j = 0; j < m; ++j) {
+                    if (j == i || graph.nodes[j].is_dead) continue;
+                    for (Edge& e : graph.nodes[j].edges) {
+                        if (e.target_node_idx == i) {
+                            e.weight = -1.0f;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    const int max_merges = std::max(0, static_cast<int>(FUSION_MAX_MERGES_PER_STEP));
+    for (int iter = 0; iter < max_merges; ++iter) {
+        if (!merge_one_close_pair(graph, maze, FUSION_DISTANCE)) {
+            break;
+        }
+        cleanup_dead(graph, maze);
+    }
+
+    cleanup_dead(graph, maze);
+    simulation_step += 1;
 }
 
 // ---------------------------------------------------------------------------
 // cleanup_dead
 // ---------------------------------------------------------------------------
 
-void cleanup_dead(Graph& graph) {
+void cleanup_dead(Graph& graph, const Maze& maze) {
     // First, remove dead-weight edges (weight == -1 sentinel) from all nodes
     for (Node& node : graph.nodes) {
         node.edges.erase(
@@ -581,9 +891,9 @@ void cleanup_dead(Graph& graph) {
                                if (e.target_node_idx < 0 ||
                                    e.target_node_idx >= static_cast<int>(graph.nodes.size()))
                                    return true;  // invalid index
-                               // Check if this edge crosses a wall (should never happen, but clean up if it does)
-                               // Skip check in cleanup to avoid performance hit - rely on prevention instead
-                               return false;
+                               const Vec2& p1 = node.pos;
+                               const Vec2& p2 = graph.nodes[e.target_node_idx].pos;
+                               return edge_crosses_wall(maze, p1, p2);
                            }),
             node.edges.end());
     }

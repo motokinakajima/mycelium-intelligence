@@ -11,7 +11,16 @@ add_executable(mycelium
         src/main.cpp
 )
 
+add_executable(train_nn
+        src/train_nn.cpp
+)
+
 target_link_libraries(mycelium
         PRIVATE
         node_sim   # node_nn is transitively linked via node_sim PUBLIC
+)
+
+target_link_libraries(train_nn
+        PRIVATE
+        node_nn
 )

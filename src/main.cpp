@@ -12,6 +12,7 @@
 // ---------------------------------------------------------------------------
 
 #include "node_nn/nn.h"
+#include "node_nn/utils/io.h"
 #include "graph.h"    // sim::Graph, sim::step, sim::cleanup_dead
 #include "maze.h"     // sim::generate_maze, sim::Maze
 #include "export.h"   // sim::SimExporter
@@ -19,6 +20,7 @@
 
 #include <iostream>
 #include <filesystem>
+#include <vector>
 
 int main(int argc, char* argv[]) {
     // Ensure output is not buffered
@@ -78,32 +80,89 @@ int main(int argc, char* argv[]) {
     std::cout << "Start:  (" << start.x  << ", " << start.y  << ")\n";
     std::cout << "Target: (" << target.x << ", " << target.y << ")\n";
 
-    // ---- Initial graph: single seed node at entry --------------------
+    // ---- Initial graph: nodes on all empty cells ----------------------
     sim::Graph graph;
     {
-        sim::Node seed;
-        seed.pos     = start;
-        seed.is_dead = false;
-        graph.nodes.push_back(seed);
+        const int start_col = 1;
+        const int start_row = 1;
+        const int end_col = maze.width - 2;
+        const int end_row = maze.height - 2;
+
+        std::vector<std::vector<int>> cell_to_node(
+            maze.height,
+            std::vector<int>(maze.width, -1));
+
+        for (int row = 0; row < maze.height; ++row) {
+            for (int col = 0; col < maze.width; ++col) {
+                if (maze.grid[row][col] != 0) {
+                    continue;
+                }
+
+                sim::Node node;
+                node.pos = {sim::cell_cx(col), sim::cell_cy(row)};
+                node.is_dead = false;
+                node.is_source = (col == start_col && row == start_row) ||
+                                 (col == end_col && row == end_row);
+                node.is_pinned = node.is_source;
+                node.energy = node.is_source ? sim::ENERGY_SOURCE_VALUE : sim::ENERGY_INITIAL;
+
+                graph.nodes.push_back(node);
+                cell_to_node[row][col] = static_cast<int>(graph.nodes.size()) - 1;
+            }
+        }
+
+        auto connect_if_open = [&](int row_a, int col_a, int row_b, int col_b) {
+            if (row_b < 0 || row_b >= maze.height || col_b < 0 || col_b >= maze.width) {
+                return;
+            }
+
+            int idx_a = cell_to_node[row_a][col_a];
+            int idx_b = cell_to_node[row_b][col_b];
+            if (idx_a < 0 || idx_b < 0) {
+                return;
+            }
+
+            graph.nodes[idx_a].edges.push_back({idx_b, sim::INITIAL_WEIGHT});
+            graph.nodes[idx_b].edges.push_back({idx_a, sim::INITIAL_WEIGHT});
+        };
+
+        for (int row = 0; row < maze.height; ++row) {
+            for (int col = 0; col < maze.width; ++col) {
+                if (cell_to_node[row][col] < 0) {
+                    continue;
+                }
+                connect_if_open(row, col, row, col + 1);
+                connect_if_open(row, col, row + 1, col);
+            }
+        }
+
+        std::cout << "Initial graph: " << graph.nodes.size() << " nodes (all empty cells), start/end pinned\n";
     }
 
-    // ---- Neural network: random initialisation (no training data) ----
-    node_nn::NeuralNetwork nn;   // constructor calls randomize()
+    // ---- Neural network: load trained model --------------------------
+    node_nn::NeuralNetwork nn;
+    const std::vector<std::string> model_paths = {
+        "node_nn_model.nn",     // if running from project root
+        "../node_nn_model.nn"   // if running from cmake-build-debug
+    };
 
-    // For this dummy experiment, bias the output layer so that:
-    //   - O[6] (Apoptosis) starts close to -1  -> nodes won't self-destruct
-    //   - O[0..1] (Grow)   biased positive     -> encourage outward growth
-    // In a real run these biases are learned from training data.
-    nn.b2[6] = -5.0f;   // tanh(-5) ≈ -0.9999 -> apoptosis strongly suppressed
-    nn.b2[0] =  2.0f;   // nudge Grow X positive (tanh(2) ≈ 0.964)
-    nn.b2[1] =  2.0f;   // nudge Grow Y positive
-    
-    std::cout << "NeuralNetwork: random weights (INPUT=" << node_nn::INPUT_SIZE
-              << ", HIDDEN=" << node_nn::HIDDEN_SIZE
-              << ", OUTPUT=" << node_nn::OUTPUT_SIZE << ")\n";
+    std::string loaded_model_path;
+    for (const auto& model_path : model_paths) {
+        if (node_nn::load_model(model_path, nn)) {
+            loaded_model_path = model_path;
+            break;
+        }
+    }
+
+    if (loaded_model_path.empty()) {
+        std::cerr << "Error: Could not load trained model node_nn_model.nn\n";
+        return 1;
+    }
+
+    std::cout << "NeuralNetwork: loaded trained model from " << loaded_model_path << "\n";
 
     // ---- Run simulation ----------------------------------------------
-    constexpr int NUM_STEPS        = 300;  // Increased for longer simulation
+    constexpr int NUM_STEPS        = 1000;  // Increased for longer simulation
     const std::string output_path  = "sim_output.json";
 
     sim::SimExporter exporter(output_path, maze);

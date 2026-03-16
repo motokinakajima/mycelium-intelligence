@@ -28,6 +28,10 @@ struct Node {
     Vec2              pos;
     std::vector<Edge> edges;
     bool              is_dead;  // set true -> removed on next cleanup
+    bool              is_pinned = false;  // pinned nodes do not move
+    bool              is_source = false;  // energy source node
+    float             energy = 0.0f;
+    int               low_energy_steps = 0;
 };
 
 // The whole network graph
@@ -65,8 +69,8 @@ void step(
     const Vec2&                 target,
     const Maze&                 maze);
 
-// Remove dead nodes and any edges that reference them.
+// Remove dead nodes, wall-crossing edges, and any edges that reference dead nodes.
 // Updates all remaining edge target indices to remain valid.
-void cleanup_dead(Graph& graph);
+void cleanup_dead(Graph& graph, const Maze& maze);
 
 } // namespace sim

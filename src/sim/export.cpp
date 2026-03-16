@@ -38,6 +38,9 @@ static void write_graph_object(std::ostream& os,
         os << "{\"id\":" << i
            << ",\"x\":" << n.pos.x
            << ",\"y\":" << n.pos.y
+              << ",\"energy\":" << n.energy
+              << ",\"nutrition\":" << n.energy
+              << ",\"source\":" << (n.is_source ? "true" : "false")
            << ",\"edges\":[";
 
         for (int j = 0; j < static_cast<int>(n.edges.size()); ++j) {
