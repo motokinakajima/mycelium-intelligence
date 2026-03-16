@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <limits>
 #include <iostream>
+#include <unordered_set>
 
 namespace sim {
 
@@ -157,6 +158,58 @@ static bool edge_crosses_wall(const Maze& maze, const Vec2& p1, const Vec2& p2) 
     }
 
     return false;
+}
+
+static Edge* find_edge(Node& node, int target_idx) {
+    for (Edge& e : node.edges) {
+        if (e.target_node_idx == target_idx) {
+            return &e;
+        }
+    }
+    return nullptr;
+}
+
+// Ensure edges are strictly bidirectional with matching weights.
+// For each undirected pair (a,b):
+// - if only one direction exists, create the reverse with the same weight
+// - if both exist, force equal weights using the average
+static void enforce_bidirectional_weight_symmetry(Graph& graph) {
+    const int m = static_cast<int>(graph.nodes.size());
+    std::unordered_set<long long> processed_pairs;
+
+    for (int i = 0; i < m; ++i) {
+        if (graph.nodes[i].is_dead) continue;
+
+        for (const Edge& e : graph.nodes[i].edges) {
+            const int j = e.target_node_idx;
+            if (e.weight <= 0.0f) continue;
+            if (j < 0 || j >= m || j == i) continue;
+            if (graph.nodes[j].is_dead) continue;
+
+            const int a = std::min(i, j);
+            const int b = std::max(i, j);
+            const long long key = (static_cast<long long>(a) << 32) |
+                                  static_cast<unsigned int>(b);
+
+            if (!processed_pairs.insert(key).second) continue;
+
+            Edge* e_ab = find_edge(graph.nodes[a], b);
+            Edge* e_ba = find_edge(graph.nodes[b], a);
+
+            const bool ab_alive = (e_ab != nullptr && e_ab->weight > 0.0f);
+            const bool ba_alive = (e_ba != nullptr && e_ba->weight > 0.0f);
+
+            if (ab_alive && ba_alive) {
+                const float w = 0.5f * (e_ab->weight + e_ba->weight);
+                e_ab->weight = w;
+                e_ba->weight = w;
+            } else if (ab_alive) {
+                graph.nodes[b].edges.push_back({a, e_ab->weight});
+            } else if (ba_alive) {
+                graph.nodes[a].edges.push_back({b, e_ba->weight});
+            }
+        }
+    }
 }
 
 static bool merge_one_close_pair(Graph& graph, const Maze& maze, float distance_threshold) {
@@ -361,6 +414,7 @@ std::array<float, node_nn::INPUT_SIZE> compute_inputs(
     std::array<float, node_nn::INPUT_SIZE> inp{};
 
     const Node& node = graph.nodes[node_idx];
+    (void)target;
 
     // ---- I[0], I[1]: Pressure vector (wall repulsion) --------------------
     // v_wall points from node TO nearest wall surface (boundary, not cell centre).
@@ -378,58 +432,83 @@ std::array<float, node_nn::INPUT_SIZE> compute_inputs(
         inp[1] = -v_wall.y * inv_r * mag;
     }
 
-    // ---- I[2], I[3]: Target / nutrient-source guidance --------------------
-    Vec2 v_goal = {target.x - node.pos.x, target.y - node.pos.y};
-    Vec2 v_goal_n = vec2_normalize(v_goal);
+    // ---- I[2], I[3]: Relative vector to nearest alive node ---------------
+    float best_d2 = std::numeric_limits<float>::max();
+    Vec2 nearest_vec = {0.0f, 0.0f};
 
-    Vec2 v_source_n = {0.0f, 0.0f};
-    bool has_source_dir = false;
-    if (TARGET_USE_NEAREST_SOURCE) {
-        float best_d2 = std::numeric_limits<float>::max();
-        for (int i = 0; i < static_cast<int>(graph.nodes.size()); ++i) {
-            if (i == node_idx) continue;
-            const Node& cand = graph.nodes[i];
-            if (cand.is_dead || !cand.is_source) continue;
-            const float dx = cand.pos.x - node.pos.x;
-            const float dy = cand.pos.y - node.pos.y;
-            const float d2 = dx * dx + dy * dy;
-            if (d2 < best_d2) {
-                best_d2 = d2;
-                v_source_n = vec2_normalize({dx, dy});
-                has_source_dir = true;
-            }
+    for (int i = 0; i < static_cast<int>(graph.nodes.size()); ++i) {
+        if (i == node_idx) continue;
+        const Node& cand = graph.nodes[i];
+        if (cand.is_dead) continue;
+
+        const float dx = cand.pos.x - node.pos.x;
+        const float dy = cand.pos.y - node.pos.y;
+        const float d2 = dx * dx + dy * dy;
+        if (d2 < best_d2) {
+            best_d2 = d2;
+            nearest_vec = {dx, dy};
         }
     }
 
-    if (has_source_dir) {
-        const float blend = clamp(TARGET_SOURCE_BLEND, 0.0f, 1.0f);
-        Vec2 v_mix = {
-            (1.0f - blend) * v_goal_n.x + blend * v_source_n.x,
-            (1.0f - blend) * v_goal_n.y + blend * v_source_n.y
-        };
-        Vec2 v_target_n = vec2_normalize(v_mix);
-        inp[2] = v_target_n.x;
-        inp[3] = v_target_n.y;
-    } else {
-        inp[2] = v_goal_n.x;
-        inp[3] = v_goal_n.y;
-    }
+    const Vec2 nearest_vec_n = vec2_normalize(nearest_vec);
+    inp[2] = nearest_vec_n.x;
+    inp[3] = nearest_vec_n.y;
 
-    // ---- I[4], I[5]: Flow COM vector -------------------------------------
-    // Weighted sum of normalised edge direction vectors
+    // ---- I[4], I[5]: Nutrient Flow COM vector ----------------------------
+    // Based on local weighted diffusion equation:
+    // out_i_to_j = alpha * E_i * (w_ij / sum_w_i)
+    // in_j_to_i  = alpha * E_j * (w_ij / sum_w_j)
+    // net_from_j = in_j_to_i - out_i_to_j
+    // flow vector is sum(direction_to_j * net_from_j)
     Vec2  flow = {0.0f, 0.0f};
     float weight_sum = 0.0f;
+    float total_weight_i = 0.0f;
+    const float alpha = clamp(ENERGY_DIFFUSION_ALPHA, 0.0f, 1.0f);
+
     for (const Edge& e : node.edges) {
+        if (e.weight <= 0.0f) continue;
         if (e.target_node_idx < 0 ||
             e.target_node_idx >= static_cast<int>(graph.nodes.size()))
             continue;
-        const Node& tgt = graph.nodes[e.target_node_idx];
-        Vec2 ev = {tgt.pos.x - node.pos.x, tgt.pos.y - node.pos.y};
-        Vec2 ev_n = vec2_normalize(ev);
-        flow.x      += ev_n.x * e.weight;
-        flow.y      += ev_n.y * e.weight;
-        weight_sum  += e.weight;
+        if (graph.nodes[e.target_node_idx].is_dead) continue;
+        total_weight_i += e.weight;
+        weight_sum += e.weight;
     }
+
+    for (const Edge& e : node.edges) {
+        if (e.weight <= 0.0f) continue;
+        if (e.target_node_idx < 0 ||
+            e.target_node_idx >= static_cast<int>(graph.nodes.size()))
+            continue;
+
+        const Node& nbr = graph.nodes[e.target_node_idx];
+        if (nbr.is_dead) continue;
+
+        Vec2 edge_vec = {nbr.pos.x - node.pos.x, nbr.pos.y - node.pos.y};
+        Vec2 edge_dir = vec2_normalize(edge_vec);
+
+        float total_weight_j = 0.0f;
+        for (const Edge& ej : nbr.edges) {
+            if (ej.weight <= 0.0f) continue;
+            if (ej.target_node_idx < 0 ||
+                ej.target_node_idx >= static_cast<int>(graph.nodes.size()))
+                continue;
+            if (graph.nodes[ej.target_node_idx].is_dead) continue;
+            total_weight_j += ej.weight;
+        }
+
+        const float out_i_to_j = (total_weight_i > 1.0e-6f)
+            ? (alpha * node.energy * (e.weight / total_weight_i))
+            : 0.0f;
+        const float in_j_to_i = (total_weight_j > 1.0e-6f)
+            ? (alpha * nbr.energy * (e.weight / total_weight_j))
+            : 0.0f;
+
+        const float net_from_j = in_j_to_i - out_i_to_j;
+        flow.x += edge_dir.x * net_from_j;
+        flow.y += edge_dir.y * net_from_j;
+    }
+
     inp[4] = flow.x;
     inp[5] = flow.y;
 
@@ -834,24 +913,28 @@ void step(
         graph.nodes[i].energy = clamp(new_e, ENERGY_MIN_CLAMP, ENERGY_MAX_CLAMP);
     }
 
-    // 4) Energy-based apoptosis after warmup.
-    if (enable_energy_apoptosis) {
-        for (int i = 0; i < m; ++i) {
-            if (graph.nodes[i].is_dead || graph.nodes[i].is_source) continue;
-            if (graph.nodes[i].energy <= NN_APOPTOSIS_ENERGY_GATE) {
-                graph.nodes[i].is_dead = true;
+    // 4) Energy-based apoptosis.
+    // Nodes with energy <= 0 die immediately, regardless of warmup.
+    // Additional gate-based apoptosis is enabled after warmup.
+    for (int i = 0; i < m; ++i) {
+        if (graph.nodes[i].is_dead || graph.nodes[i].is_source) continue;
 
-                for (Edge& e : graph.nodes[i].edges) {
+        const bool zero_energy_death = (graph.nodes[i].energy <= 0.0f);
+        const bool gate_death = enable_energy_apoptosis &&
+                                (graph.nodes[i].energy <= NN_APOPTOSIS_ENERGY_GATE);
+        if (!(zero_energy_death || gate_death)) continue;
+
+        graph.nodes[i].is_dead = true;
+
+        for (Edge& e : graph.nodes[i].edges) {
+            e.weight = -1.0f;
+        }
+
+        for (int j = 0; j < m; ++j) {
+            if (j == i || graph.nodes[j].is_dead) continue;
+            for (Edge& e : graph.nodes[j].edges) {
+                if (e.target_node_idx == i) {
                     e.weight = -1.0f;
-                }
-
-                for (int j = 0; j < m; ++j) {
-                    if (j == i || graph.nodes[j].is_dead) continue;
-                    for (Edge& e : graph.nodes[j].edges) {
-                        if (e.target_node_idx == i) {
-                            e.weight = -1.0f;
-                        }
-                    }
                 }
             }
         }
@@ -866,6 +949,7 @@ void step(
     }
 
     cleanup_dead(graph, maze);
+    enforce_bidirectional_weight_symmetry(graph);
     simulation_step += 1;
 }
 
