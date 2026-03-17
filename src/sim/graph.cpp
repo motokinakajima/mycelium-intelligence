@@ -475,12 +475,15 @@ std::array<float, node_nn::INPUT_SIZE> compute_inputs(
     inp[3] = nearest_vec_n.y;
 
     // ---- I[4], I[5]: Nutrient Flow COM vector ----------------------------
-    // Based on simultaneous bidirectional diffusion on each edge:
-    // net(j -> i) = beta * w_ij * (E_j - E_i)
-    // flow vector = sum(direction_to_j * net(j -> i))
+    // Based on local weighted diffusion equation:
+    // out_i_to_j = alpha * E_i * (w_ij / sum_w_i)
+    // in_j_to_i  = alpha * E_j * (w_ij / sum_w_j)
+    // net_from_j = in_j_to_i - out_i_to_j
+    // flow vector is sum(direction_to_j * net_from_j)
     Vec2  flow = {0.0f, 0.0f};
     float weight_sum = 0.0f;
-    const float beta = clamp(ENERGY_DIFFUSION_ALPHA, 0.0f, 1.0f);
+    float total_weight_i = 0.0f;
+    const float alpha = clamp(ENERGY_DIFFUSION_ALPHA, 0.0f, 1.0f);
 
     for (const Edge& e : node.edges) {
         if (e.weight <= 0.0f) continue;
@@ -488,6 +491,7 @@ std::array<float, node_nn::INPUT_SIZE> compute_inputs(
             e.target_node_idx >= static_cast<int>(graph.nodes.size()))
             continue;
         if (graph.nodes[e.target_node_idx].is_dead) continue;
+        total_weight_i += e.weight;
         weight_sum += e.weight;
     }
 
@@ -503,18 +507,24 @@ std::array<float, node_nn::INPUT_SIZE> compute_inputs(
         Vec2 edge_vec = {nbr.pos.x - node.pos.x, nbr.pos.y - node.pos.y};
         Vec2 edge_dir = vec2_normalize(edge_vec);
 
-        float reverse_weight = 0.0f;
+        float total_weight_j = 0.0f;
         for (const Edge& ej : nbr.edges) {
-            if (ej.target_node_idx == node_idx && ej.weight > 0.0f) {
-                reverse_weight = ej.weight;
-                break;
-            }
+            if (ej.weight <= 0.0f) continue;
+            if (ej.target_node_idx < 0 ||
+                ej.target_node_idx >= static_cast<int>(graph.nodes.size()))
+                continue;
+            if (graph.nodes[ej.target_node_idx].is_dead) continue;
+            total_weight_j += ej.weight;
         }
 
-        const float effective_weight =
-            (reverse_weight > 0.0f) ? (0.5f * (e.weight + reverse_weight)) : e.weight;
+        const float out_i_to_j = (total_weight_i > 1.0e-6f)
+            ? (alpha * node.energy * (e.weight / total_weight_i))
+            : 0.0f;
+        const float in_j_to_i = (total_weight_j > 1.0e-6f)
+            ? (alpha * nbr.energy * (e.weight / total_weight_j))
+            : 0.0f;
 
-        const float net_from_j = beta * effective_weight * (nbr.energy - node.energy);
+        const float net_from_j = in_j_to_i - out_i_to_j;
         flow.x += edge_dir.x * net_from_j;
         flow.y += edge_dir.y * net_from_j;
     }
@@ -871,43 +881,50 @@ void step(
         old_energy[i] = graph.nodes[i].energy;
     }
 
-    const float beta = clamp(ENERGY_DIFFUSION_ALPHA, 0.0f, 1.0f);
-    std::vector<float> next_energy = old_energy;
+    const float alpha = clamp(ENERGY_DIFFUSION_ALPHA, 0.0f, 1.0f);
+    std::vector<float> next_energy(static_cast<size_t>(m), 0.0f);
 
-    // 1) Simultaneous bidirectional diffusion on each undirected pair.
-    // flux(i -> j) = beta * w_ij * (E_i - E_j)
-    // Apply once per pair (i < j), subtract from i and add to j.
+    // 1) Keep local remainder: (1 - alpha) * E_i
     for (int i = 0; i < m; ++i) {
         if (graph.nodes[i].is_dead) continue;
+        const float outflow = old_energy[i] * alpha;
+        next_energy[i] += (old_energy[i] - outflow);
+    }
+
+    // 2) Distribute outflow to neighbors in proportion to edge weights.
+    for (int i = 0; i < m; ++i) {
+        if (graph.nodes[i].is_dead) continue;
+
+        const float outflow = old_energy[i] * alpha;
+        float total_weight = 0.0f;
 
         for (const Edge& e : graph.nodes[i].edges) {
             if (e.weight <= 0.0f) continue;
 
             const int j = e.target_node_idx;
             if (j < 0 || j >= m) continue;
-            if (j <= i) continue;
             if (graph.nodes[j].is_dead) continue;
 
-            float reverse_weight = 0.0f;
-            for (const Edge& ej : graph.nodes[j].edges) {
-                if (ej.target_node_idx == i && ej.weight > 0.0f) {
-                    reverse_weight = ej.weight;
-                    break;
-                }
-            }
+            total_weight += e.weight;
+        }
 
-            const float effective_weight =
-                (reverse_weight > 0.0f) ? (0.5f * (e.weight + reverse_weight)) : e.weight;
+        if (total_weight <= 1.0e-6f) continue;
 
-            const float flux_i_to_j = beta * effective_weight * (old_energy[i] - old_energy[j]);
-            next_energy[i] -= flux_i_to_j;
-            next_energy[j] += flux_i_to_j;
+        for (const Edge& e : graph.nodes[i].edges) {
+            if (e.weight <= 0.0f) continue;
+
+            const int j = e.target_node_idx;
+            if (j < 0 || j >= m) continue;
+            if (graph.nodes[j].is_dead) continue;
+
+            const float flow_to_j = outflow * (e.weight / total_weight);
+            next_energy[j] += flow_to_j;
         }
     }
 
     const bool enable_energy_apoptosis = simulation_step > static_cast<int>(APOPTOSIS_WARMUP_STEPS);
 
-    // 2) Apply maintenance, source overwrite, clamp.
+    // 3) Apply maintenance, source overwrite, clamp.
     for (int i = 0; i < m; ++i) {
         if (graph.nodes[i].is_dead) continue;
 
@@ -919,7 +936,7 @@ void step(
         graph.nodes[i].energy = clamp(new_e, ENERGY_MIN_CLAMP, ENERGY_MAX_CLAMP);
     }
 
-    // 3) Energy-based apoptosis.
+    // 4) Energy-based apoptosis.
     // Nodes with energy <= 0 die immediately, regardless of warmup.
     // Additional gate-based apoptosis is enabled after warmup.
     for (int i = 0; i < m; ++i) {
