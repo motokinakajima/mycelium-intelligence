@@ -2,7 +2,7 @@ import numpy as np
 import csv
 
 NUM_SAMPLES = 25000
-OUTPUT_FILE = 'training_data_conservative.csv'
+OUTPUT_FILE = 'training_data_v11_safe_junctions.csv' # ← バッチ変更用
 
 def normalize(v):
     norm = np.linalg.norm(v)
@@ -11,42 +11,61 @@ def normalize(v):
     return v / norm
 
 def generate_sample():
-    # 1. 入力生成
     pressure = np.random.uniform(-1.0, 1.0, 2) 
-    target = np.random.uniform(-1.0, 1.0, 2)  # 一番近いノードへの方向ベクトル
+    target = np.random.uniform(-1.0, 1.0, 2)
     target = normalize(target)
-    flow_com = np.random.uniform(-1.0, 1.0, 2)
+    
+    flow_com_raw = np.array([np.random.uniform(-1.0, 1.0), np.random.uniform(-1.0, 1.0)])
+    flow_mag = min(1.0, np.linalg.norm(flow_com_raw)) 
+    flow_dir = normalize(flow_com_raw)
+
     importance = np.random.uniform(0.0, 1.0)
     crowdedness = np.random.uniform(0.0, 1.0)
+
+    # ---------------------------------------------------------
+    # 【修正版】交差点での暴走を防ぐリミッター付きモデル
+    # ---------------------------------------------------------
+    
+    starvation = 1.0 - importance # 飢餓度（最大1.0）
+    stagnation = 1.0 - flow_mag   # 淀み度（最大1.0）
+
+    # 1. Shear Stress (せん断応力) はそのまま維持！
+    # 命綱（橋）を守るための重要な指標。
+    shear_stress = flow_mag / (importance + 0.1) 
+    
+    # 2. Pruneの計算（ここが暴走の原因でした！）
+    # 割り算を使うのをやめ、「淀み」と「密集度」の掛け算にします（最大でも1.0にしかならない）
+    desired_prune = stagnation * crowdedness
+
+    # 【絶対的なリミッター】
+    # どれだけPruneしたくても、「自分が飢えている度合い(starvation)」を上限とする！
+    # 交差点(importanceが高い＝starvationが低い)なら、ここで強制的にPruneが極小に抑えられます。
+    base_prune = min(desired_prune, starvation)
+    
+    # 命綱(shear_stressが高い)なら、さらにPruneを減らす
+    prune_strength = max(0.0, base_prune - (shear_stress * 0.3))
+
+    # --- Grow (強化) ---
+    grow_dir = flow_dir * 1.0 + target * 0.2
+    # 命綱として負担がかかっている（shear_stressが高い）、または普通に流れているならGrow
+    grow_strength = min(1.0, max(flow_mag, shear_stress * 0.4))
+
+    # --- 方向の計算 ---
+    prune_dir = -flow_dir * 1.0 + pressure * 1.0
+    grow = normalize(grow_dir) * grow_strength if np.linalg.norm(grow_dir) > 0 else np.array([0.0, 0.0])
+    prune = normalize(prune_dir) * prune_strength if np.linalg.norm(prune_dir) > 0 else np.array([0.0, 0.0])
+
+    shift_dir = target * 0.5 + flow_dir * 0.5 - pressure * 1.0
+    shift = normalize(shift_dir) * 0.2 if np.linalg.norm(shift_dir) > 0 else np.array([0.0, 0.0])
+
+    apoptosis = -1.0
 
     inputs = [
         pressure[0], pressure[1],
         target[0], target[1],
-        flow_com[0], flow_com[1],
+        flow_com_raw[0], flow_com_raw[1],
         importance, crowdedness
     ]
-
-    # ---------------------------------------------------------
-    # 2. 「休眠と保守的刈り込み」モデル (Heuristics v6)
-    # ---------------------------------------------------------
-    
-    # Grow: 血流(flow_com)と仲間(target)の方向を穏やかに強化
-    grow_dir = flow_com * 1.0 + target * 0.5
-    grow_strength = importance * 0.5  # 以前より出力を抑えめに（最大0.5）
-    grow = normalize(grow_dir) * grow_strength if np.linalg.norm(grow_dir) > 0 else np.array([0.0, 0.0])
-
-    # Prune: 【超保守的】エネルギーがあるうちは絶対に切らない
-    prune_dir = -flow_com * 1.0 - target * 0.5 - pressure * 0.5
-    # importance が 0.8 を下回って初めて、ジワジワと切り始める（最大出力も0.2に制限）
-    prune_strength = max(0.0, 0.8 - importance) * 0.2
-    prune = normalize(prune_dir) * prune_strength if np.linalg.norm(prune_dir) > 0 else np.array([0.0, 0.0])
-
-    # Shift: 控えめにうにょうにょさせる
-    shift_dir = target * 0.5 + flow_com * 0.5 - pressure * 1.0
-    shift = normalize(shift_dir) * 0.2 if np.linalg.norm(shift_dir) > 0 else np.array([0.0, 0.0])
-
-    # Apoptosis: 物理エンジンにお任せ
-    apoptosis = -1.0
 
     ideal_outputs = [
         grow[0], grow[1],
@@ -55,14 +74,14 @@ def generate_sample():
         apoptosis
     ]
 
-    # 3. ノイズ付与（ノイズも小さくして暴発を防ぐ）
     final_outputs = []
     for val in ideal_outputs:
-        noisy_val = val + np.random.normal(0, 0.02)
+        noisy_val = val + np.random.normal(0, 0.03)
         clamped_val = np.clip(noisy_val, -1.0, 1.0)
         final_outputs.append(clamped_val)
 
     return inputs + final_outputs
+
 # CSVファイルへの書き込み
 with open(OUTPUT_FILE, 'w', newline='') as f:
     writer = csv.writer(f)

@@ -14,7 +14,7 @@ set "TEST_RATIO=%~3"
 if "%TEST_RATIO%"=="" set "TEST_RATIO=0.2"
 
 set "CSV=%~4"
-if "%CSV%"=="" set "CSV=heuristics\training_data.csv"
+if "%CSV%"=="" set "CSV=heuristics\training_data_v11_safe_junctions.csv"
 
 if not exist "%CSV%" (
     echo [ERROR] CSV not found: %CSV%

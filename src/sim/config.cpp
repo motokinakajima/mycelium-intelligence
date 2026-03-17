@@ -53,6 +53,8 @@ float ENERGY_SOURCE_VALUE    = 100.0f;
 float ENERGY_MAINTENANCE_COST = 1.0f;
 float ENERGY_MAINTENANCE_PER_WEIGHT = 0.02f;
 float ENERGY_DIFFUSION_ALPHA  = 0.05f;
+float ENERGY_FLOW_GAIN        = 1.0f;
+bool  ENERGY_FLOW_NORMALIZE_BY_DEGREE = true;
 float ENERGY_INITIAL          = 20.0f;
 bool  ENERGY_USE_AS_IMPORTANCE = true;
 float ENERGY_IMPORTANCE_SCALE  = 0.05f;
@@ -142,6 +144,8 @@ void set_default_config() {
     ENERGY_MAINTENANCE_COST = 0.6f;
     ENERGY_MAINTENANCE_PER_WEIGHT = 0.02f;
     ENERGY_DIFFUSION_ALPHA  = 0.15f;
+    ENERGY_FLOW_GAIN        = 1.0f;
+    ENERGY_FLOW_NORMALIZE_BY_DEGREE = true;
     ENERGY_INITIAL          = 40.0f;
     ENERGY_USE_AS_IMPORTANCE = true;
     ENERGY_IMPORTANCE_SCALE  = 0.05f;
@@ -215,6 +219,8 @@ bool load_config(const std::string& filepath) {
         else if (key == "ENERGY_MAINTENANCE_COST") ENERGY_MAINTENANCE_COST = value;
         else if (key == "ENERGY_MAINTENANCE_PER_WEIGHT") ENERGY_MAINTENANCE_PER_WEIGHT = value;
         else if (key == "ENERGY_DIFFUSION_ALPHA")  ENERGY_DIFFUSION_ALPHA = value;
+        else if (key == "ENERGY_FLOW_GAIN")        ENERGY_FLOW_GAIN = value;
+        else if (key == "ENERGY_FLOW_NORMALIZE_BY_DEGREE") ENERGY_FLOW_NORMALIZE_BY_DEGREE = (value > 0.5f);
         else if (key == "ENERGY_INITIAL")          ENERGY_INITIAL = value;
         else if (key == "ENERGY_USE_AS_IMPORTANCE") ENERGY_USE_AS_IMPORTANCE = (value > 0.5f);
         else if (key == "ENERGY_IMPORTANCE_SCALE")  ENERGY_IMPORTANCE_SCALE = value;
