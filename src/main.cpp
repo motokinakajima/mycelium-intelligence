@@ -66,7 +66,7 @@ int main(int argc, char* argv[]) {
     // ---- Maze setup ---------------------------------------------------
     constexpr int MAZE_COLS = 5;   // "room" columns  -> grid width  = 11
     constexpr int MAZE_ROWS = 5;   // "room" rows     -> grid height = 11
-    constexpr unsigned MAZE_SEED = 48u;
+    constexpr unsigned MAZE_SEED = 49u;
 
     sim::Maze maze = sim::generate_maze(MAZE_COLS, MAZE_ROWS, MAZE_SEED);
     std::cout << "Maze: " << maze.width << " x " << maze.height << " cells\n";
@@ -162,7 +162,7 @@ int main(int argc, char* argv[]) {
     std::cout << "NeuralNetwork: loaded trained model from " << loaded_model_path << "\n";
 
     // ---- Run simulation ----------------------------------------------
-    constexpr int NUM_STEPS        = 1000;  // Increased for longer simulation
+    constexpr int NUM_STEPS        = 1200;  // Increased for longer simulation
     const std::string output_path  = "sim_output.json";
 
     sim::SimExporter exporter(output_path, maze);

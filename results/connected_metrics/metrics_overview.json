@@ -1,0 +1,25 @@
+{
+  "input_csv": "cmake-build-debug\\seed_step_metrics_512.csv",
+  "total_seeds": 512,
+  "seeds_ever_connected": 512,
+  "seeds_with_disappear_events": 162,
+  "total_disappear_events": 203,
+  "first_disappear_step_stats": {
+    "count": 162,
+    "mean": 525.216049382716,
+    "median": 486.0,
+    "min": 17,
+    "max": 1195
+  },
+  "persistent_threshold_step": 1075,
+  "persistent_after_first_connection_count": 366,
+  "persistent_after_first_connection_ratio": 0.71484375,
+  "always_connected_count": 350,
+  "final_connected_count": 361,
+  "outputs": {
+    "connected_disappear_events": "results\\connected_metrics\\connected_disappear_events.csv",
+    "seed_connectivity_summary": "results\\connected_metrics\\seed_connectivity_summary.csv",
+    "persistent_seeds_metrics": "results\\connected_metrics\\persistent_seeds_metrics.csv",
+    "metrics_overview": "results\\connected_metrics\\metrics_overview.json"
+  }
+}

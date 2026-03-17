@@ -37,6 +37,7 @@ struct Node {
 // The whole network graph
 struct Graph {
     std::vector<Node> nodes;
+    int simulation_step = 0;
 };
 
 // Forward declaration so graph.h doesn't depend on maze.h order

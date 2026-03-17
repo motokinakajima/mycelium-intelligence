@@ -33,6 +33,10 @@ static float clamp(float v, float lo, float hi) {
     return v < lo ? lo : (v > hi ? hi : v);
 }
 
+static float clamp_edge_weight(float w) {
+    return clamp(w, 0.0f, std::max(0.0f, EDGE_WEIGHT_MAX));
+}
+
 // Add weight to an edge between two nodes, creating it if it doesn't exist.
 // Prevents duplicate edges by checking first.
 static void add_or_strengthen_edge(Graph& graph, int from_idx, int to_idx, float weight_delta) {
@@ -47,13 +51,13 @@ static void add_or_strengthen_edge(Graph& graph, int from_idx, int to_idx, float
     for (Edge& e : from_node.edges) {
         if (e.target_node_idx == to_idx) {
             // Edge exists, strengthen it
-            e.weight += weight_delta;
+            e.weight = clamp_edge_weight(e.weight + weight_delta);
             return;
         }
     }
     
     // Edge doesn't exist, create it
-    from_node.edges.push_back({to_idx, weight_delta});
+    from_node.edges.push_back({to_idx, clamp_edge_weight(weight_delta)});
 }
 
 // Raycast from start to end, return the furthest valid (non-wall) position.
@@ -217,7 +221,7 @@ static void enforce_bidirectional_weight_symmetry(Graph& graph) {
             : std::max(w_ij, w_ji);
 
         if (w > 0.0f) {
-            undirected_w[key_ij] = w;
+            undirected_w[key_ij] = clamp_edge_weight(w);
         }
     }
 
@@ -703,7 +707,7 @@ void apply_vibe(
                 }
 
                 if (applied_delta > 1.0e-6f) {
-                    e.weight += applied_delta;
+                    e.weight = clamp_edge_weight(e.weight + applied_delta);
                     node.energy -= applied_delta * ENERGY_COST_EDGE_THICKEN;
                     snapped = true;
                     if (DEBUG_GROW) {
@@ -941,7 +945,7 @@ void step(
     const Vec2&                   target,
     const Maze&                   maze)
 {
-    static int simulation_step = 0;
+    const int simulation_step = graph.simulation_step;
     const int n = static_cast<int>(graph.nodes.size());
 
     for (int i = 0; i < n; ++i) {
@@ -1037,13 +1041,68 @@ void step(
 
     const bool enable_energy_apoptosis = simulation_step > static_cast<int>(APOPTOSIS_WARMUP_STEPS);
 
+    int goal_source_idx = -1;
+    int source_count = 0;
+    if (ENERGY_PULSE_ENABLE) {
+        float best_goal_d2 = std::numeric_limits<float>::max();
+        for (int i = 0; i < m; ++i) {
+            if (graph.nodes[i].is_dead || !graph.nodes[i].is_source) continue;
+            ++source_count;
+            const float dx = graph.nodes[i].pos.x - target.x;
+            const float dy = graph.nodes[i].pos.y - target.y;
+            const float d2 = dx * dx + dy * dy;
+            if (d2 < best_goal_d2) {
+                best_goal_d2 = d2;
+                goal_source_idx = i;
+            }
+        }
+    }
+
+    float source_level_goal = ENERGY_SOURCE_VALUE;
+    float source_level_other = ENERGY_SOURCE_VALUE;
+    if (ENERGY_PULSE_ENABLE && source_count >= 2) {
+        const int period = std::max(1, static_cast<int>(ENERGY_PULSE_PERIOD_STEPS));
+        const float low_ratio = clamp(ENERGY_PULSE_LOW_RATIO, 0.0f, 1.0f);
+        const float high = ENERGY_SOURCE_VALUE;
+        const float low = high * low_ratio;
+        const float sink = ENERGY_PULSE_SINK_VALUE;
+
+        constexpr float PI = 3.14159265358979323846f;
+        const float phase = (2.0f * PI * static_cast<float>(simulation_step % period)) /
+                            static_cast<float>(period);
+        const float wave = std::sin(phase);
+        const float amp = std::abs(wave);
+        const float active_level = low + (high - low) * amp;
+
+        // Source-sink breathing: one side injects, the opposite side pulls.
+        if (wave >= 0.0f) {
+            source_level_other = active_level;
+            source_level_goal  = sink;
+        } else {
+            source_level_other = sink;
+            source_level_goal  = active_level;
+        }
+    }
+
     // 2) Apply maintenance, source overwrite, clamp.
     for (int i = 0; i < m; ++i) {
         if (graph.nodes[i].is_dead) continue;
 
-        float new_e = next_energy[i] - ENERGY_MAINTENANCE_COST;
+        float total_weight = 0.0f;
+        for (const Edge& e : graph.nodes[i].edges) {
+            if (e.weight <= 0.0f) continue;
+            total_weight += e.weight;
+        }
+
+        const float maintenance = ENERGY_MAINTENANCE_COST +
+                                  ENERGY_MAINTENANCE_PER_WEIGHT * total_weight;
+        float new_e = next_energy[i] - maintenance;
         if (graph.nodes[i].is_source) {
-            new_e = ENERGY_SOURCE_VALUE;
+            if (ENERGY_PULSE_ENABLE && source_count >= 2 && goal_source_idx >= 0) {
+                new_e = (i == goal_source_idx) ? source_level_goal : source_level_other;
+            } else {
+                new_e = ENERGY_SOURCE_VALUE;
+            }
         }
 
         graph.nodes[i].energy = clamp(new_e, ENERGY_MIN_CLAMP, ENERGY_MAX_CLAMP);
@@ -1086,7 +1145,7 @@ void step(
 
     cleanup_dead(graph, maze);
     enforce_bidirectional_weight_symmetry(graph);
-    simulation_step += 1;
+    graph.simulation_step += 1;
 }
 
 // ---------------------------------------------------------------------------
