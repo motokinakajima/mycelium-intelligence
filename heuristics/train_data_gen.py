@@ -2,7 +2,7 @@ import numpy as np
 import csv
 
 NUM_SAMPLES = 25000
-OUTPUT_FILE = 'training_data_v11_safe_junctions.csv' # ← バッチ変更用
+OUTPUT_FILE = 'training_data_v12_murrays_law.csv'
 
 def normalize(v):
     norm = np.linalg.norm(v)
@@ -16,42 +16,33 @@ def generate_sample():
     target = normalize(target)
     
     flow_com_raw = np.array([np.random.uniform(-1.0, 1.0), np.random.uniform(-1.0, 1.0)])
-    flow_mag = min(1.0, np.linalg.norm(flow_com_raw)) 
+    
+    # 【超重要】流量のスケール感が小さくなっていると想定し、AIが感じ取りやすくする
+    # ※C++側で正規化している場合はそのままでも良いですが、ここでは感度を上げます
+    flow_mag = min(1.0, np.linalg.norm(flow_com_raw) * 3.0) # 感度を3倍にブースト！
     flow_dir = normalize(flow_com_raw)
 
     importance = np.random.uniform(0.0, 1.0)
-    crowdedness = np.random.uniform(0.0, 1.0)
+    crowdedness = np.random.uniform(0.0, 1.0) # 今回は一旦無視して基本ルールをテストします
 
     # ---------------------------------------------------------
-    # 【修正版】交差点での暴走を防ぐリミッター付きモデル
+    # v12: 超シンプル・生物学的ルール（マレーの法則ベース）
     # ---------------------------------------------------------
     
-    starvation = 1.0 - importance # 飢餓度（最大1.0）
-    stagnation = 1.0 - flow_mag   # 淀み度（最大1.0）
-
-    # 1. Shear Stress (せん断応力) はそのまま維持！
-    # 命綱（橋）を守るための重要な指標。
-    shear_stress = flow_mag / (importance + 0.1) 
-    
-    # 2. Pruneの計算（ここが暴走の原因でした！）
-    # 割り算を使うのをやめ、「淀み」と「密集度」の掛け算にします（最大でも1.0にしかならない）
-    desired_prune = stagnation * crowdedness
-
-    # 【絶対的なリミッター】
-    # どれだけPruneしたくても、「自分が飢えている度合い(starvation)」を上限とする！
-    # 交差点(importanceが高い＝starvationが低い)なら、ここで強制的にPruneが極小に抑えられます。
-    base_prune = min(desired_prune, starvation)
-    
-    # 命綱(shear_stressが高い)なら、さらにPruneを減らす
-    prune_strength = max(0.0, base_prune - (shear_stress * 0.3))
+    stagnation = 1.0 - flow_mag   
+    starvation = 1.0 - importance 
 
     # --- Grow (強化) ---
     grow_dir = flow_dir * 1.0 + target * 0.2
-    # 命綱として負担がかかっている（shear_stressが高い）、または普通に流れているならGrow
-    grow_strength = min(1.0, max(flow_mag, shear_stress * 0.4))
+    # 少しでも流れているなら、素直に太くする（命綱の保護）
+    grow_strength = flow_mag * 0.8 
 
-    # --- 方向の計算 ---
+    # --- Prune (刈り込み) ---
     prune_dir = -flow_dir * 1.0 + pressure * 1.0
+    # 「流れていない(stagnation)」 AND 「エネルギーもない(starvation)」時だけ刈り込む
+    # 流量が少しでもある命綱は、stagnationが下がるのでPruneされにくくなる
+    prune_strength = (stagnation * starvation) * 0.6
+
     grow = normalize(grow_dir) * grow_strength if np.linalg.norm(grow_dir) > 0 else np.array([0.0, 0.0])
     prune = normalize(prune_dir) * prune_strength if np.linalg.norm(prune_dir) > 0 else np.array([0.0, 0.0])
 
@@ -76,12 +67,11 @@ def generate_sample():
 
     final_outputs = []
     for val in ideal_outputs:
-        noisy_val = val + np.random.normal(0, 0.03)
+        noisy_val = val + np.random.normal(0, 0.02) # ノイズも少し減らして純粋な挙動を見ます
         clamped_val = np.clip(noisy_val, -1.0, 1.0)
         final_outputs.append(clamped_val)
 
     return inputs + final_outputs
-
 # CSVファイルへの書き込み
 with open(OUTPUT_FILE, 'w', newline='') as f:
     writer = csv.writer(f)

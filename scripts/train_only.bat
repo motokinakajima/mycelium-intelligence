@@ -5,7 +5,7 @@ set "SCRIPT_DIR=%~dp0"
 pushd "%SCRIPT_DIR%\.." >nul
 
 set "EPOCHS=%~1"
-if "%EPOCHS%"=="" set "EPOCHS=400"
+if "%EPOCHS%"=="" set "EPOCHS=1000"
 
 set "MODEL=%~2"
 if "%MODEL%"=="" set "MODEL=node_nn_model.nn"
@@ -14,7 +14,7 @@ set "TEST_RATIO=%~3"
 if "%TEST_RATIO%"=="" set "TEST_RATIO=0.2"
 
 set "CSV=%~4"
-if "%CSV%"=="" set "CSV=heuristics\training_data_v11_safe_junctions.csv"
+if "%CSV%"=="" set "CSV=heuristics\training_data_v12_murrays_law.csv"
 
 if not exist "%CSV%" (
     echo [ERROR] CSV not found: %CSV%

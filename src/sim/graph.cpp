@@ -7,6 +7,7 @@
 #include <limits>
 #include <iostream>
 #include <unordered_set>
+#include <unordered_map>
 
 namespace sim {
 
@@ -170,45 +171,70 @@ static Edge* find_edge(Node& node, int target_idx) {
 }
 
 // Ensure edges are strictly bidirectional with matching weights.
-// For each undirected pair (a,b):
-// - if only one direction exists, create the reverse with the same weight
-// - if both exist, force equal weights using the average
+// Rebuilds edges from undirected pair weights to avoid in-loop mutation bugs.
 static void enforce_bidirectional_weight_symmetry(Graph& graph) {
     const int m = static_cast<int>(graph.nodes.size());
-    std::unordered_set<long long> processed_pairs;
+    if (m <= 1) return;
+
+    std::unordered_map<long long, float> w_ab;  // directed a->b
+    std::unordered_map<long long, float> undirected_w;
+
+    auto make_key = [](int a, int b) -> long long {
+        return (static_cast<long long>(a) << 32) | static_cast<unsigned int>(b);
+    };
 
     for (int i = 0; i < m; ++i) {
         if (graph.nodes[i].is_dead) continue;
-
         for (const Edge& e : graph.nodes[i].edges) {
             const int j = e.target_node_idx;
             if (e.weight <= 0.0f) continue;
             if (j < 0 || j >= m || j == i) continue;
             if (graph.nodes[j].is_dead) continue;
 
-            const int a = std::min(i, j);
-            const int b = std::max(i, j);
-            const long long key = (static_cast<long long>(a) << 32) |
-                                  static_cast<unsigned int>(b);
-
-            if (!processed_pairs.insert(key).second) continue;
-
-            Edge* e_ab = find_edge(graph.nodes[a], b);
-            Edge* e_ba = find_edge(graph.nodes[b], a);
-
-            const bool ab_alive = (e_ab != nullptr && e_ab->weight > 0.0f);
-            const bool ba_alive = (e_ba != nullptr && e_ba->weight > 0.0f);
-
-            if (ab_alive && ba_alive) {
-                const float w = 0.5f * (e_ab->weight + e_ba->weight);
-                e_ab->weight = w;
-                e_ba->weight = w;
-            } else if (ab_alive) {
-                graph.nodes[b].edges.push_back({a, e_ab->weight});
-            } else if (ba_alive) {
-                graph.nodes[a].edges.push_back({b, e_ba->weight});
+            const long long key = make_key(i, j);
+            auto it = w_ab.find(key);
+            if (it == w_ab.end()) {
+                w_ab.emplace(key, e.weight);
+            } else {
+                it->second = std::max(it->second, e.weight);
             }
         }
+    }
+
+    for (const auto& kv : w_ab) {
+        const int a = static_cast<int>(kv.first >> 32);
+        const int b = static_cast<int>(kv.first & 0xffffffffu);
+        const int i = std::min(a, b);
+        const int j = std::max(a, b);
+
+        const long long key_ij = make_key(i, j);
+        const long long key_ji = make_key(j, i);
+
+        const float w_ij = w_ab.count(key_ij) ? w_ab[key_ij] : 0.0f;
+        const float w_ji = w_ab.count(key_ji) ? w_ab[key_ji] : 0.0f;
+        const float w = (w_ij > 0.0f && w_ji > 0.0f)
+            ? (0.5f * (w_ij + w_ji))
+            : std::max(w_ij, w_ji);
+
+        if (w > 0.0f) {
+            undirected_w[key_ij] = w;
+        }
+    }
+
+    for (int i = 0; i < m; ++i) {
+        graph.nodes[i].edges.clear();
+    }
+
+    for (const auto& kv : undirected_w) {
+        const int i = static_cast<int>(kv.first >> 32);
+        const int j = static_cast<int>(kv.first & 0xffffffffu);
+        const float w = kv.second;
+
+        if (i < 0 || i >= m || j < 0 || j >= m || i == j) continue;
+        if (graph.nodes[i].is_dead || graph.nodes[j].is_dead) continue;
+
+        graph.nodes[i].edges.push_back({j, w});
+        graph.nodes[j].edges.push_back({i, w});
     }
 }
 
@@ -334,6 +360,74 @@ static bool merge_one_close_pair(Graph& graph, const Maze& maze, float distance_
                 continue;
             }
 
+            // Side-preservation guard:
+            // Require connectivity on BOTH sides based on edges that will
+            // actually be created from best_pos.
+            bool keeps_i_side = false;
+            bool keeps_j_side = false;
+            bool keeps_i_exclusive = false;
+            bool keeps_j_exclusive = false;
+            bool keeps_positive_axis_side = false;
+            bool keeps_negative_axis_side = false;
+            int reconnectable_neighbor_count = 0;
+            std::vector<std::pair<int, float>> reconnectable;
+            reconnectable.reserve(static_cast<size_t>(old_node_count));
+
+            const Vec2 merge_axis = {b.pos.x - a.pos.x, b.pos.y - a.pos.y};
+            const float axis_len = vec2_length(merge_axis);
+            const Vec2 merge_axis_n = (axis_len > 1.0e-6f)
+                ? Vec2{merge_axis.x / axis_len, merge_axis.y / axis_len}
+                : Vec2{0.0f, 0.0f};
+
+            for (int k = 0; k < old_node_count; ++k) {
+                if (k == i || k == j) continue;
+                if (graph.nodes[k].is_dead) continue;
+
+                const float wi = i_incident[k];
+                const float wj = j_incident[k];
+                const float merged_weight = wi + wj;
+                if (merged_weight <= 0.0f) continue;
+
+                // final safety gate: only count edges that are actually valid
+                // from the chosen merge position.
+                if (edge_crosses_wall(maze, best_pos, graph.nodes[k].pos)) {
+                    continue;
+                }
+
+                ++reconnectable_neighbor_count;
+                if (wi > 0.0f) keeps_i_side = true;
+                if (wj > 0.0f) keeps_j_side = true;
+                if (wi > 0.0f && wj <= 0.0f) keeps_i_exclusive = true;
+                if (wj > 0.0f && wi <= 0.0f) keeps_j_exclusive = true;
+
+                if (axis_len > 1.0e-6f) {
+                    const Vec2 vk = {
+                        graph.nodes[k].pos.x - best_pos.x,
+                        graph.nodes[k].pos.y - best_pos.y
+                    };
+                    const float proj = vec2_dot(vk, merge_axis_n);
+                    if (proj > 1.0e-4f) keeps_positive_axis_side = true;
+                    if (proj < -1.0e-4f) keeps_negative_axis_side = true;
+                }
+
+                reconnectable.push_back({k, merged_weight});
+            }
+
+            // Stronger requirement for chain preservation (e.g., a-b-c-d -> a-x-d):
+            // both original sides must retain at least one EXCLUSIVE neighbor,
+                        // not only shared neighbors. Also require geometric two-sidedness
+                        // along the i<->j merge axis when axis is well-defined.
+                        const bool has_geometric_two_sides =
+                                (axis_len <= 1.0e-6f) ||
+                                (keeps_positive_axis_side && keeps_negative_axis_side);
+
+            if (!(keeps_i_side && keeps_j_side &&
+                  keeps_i_exclusive && keeps_j_exclusive &&
+                                    reconnectable_neighbor_count >= 2 &&
+                                    has_geometric_two_sides)) {
+                continue;
+            }
+
             Node merged;
             merged.pos = best_pos;
             merged.is_dead = false;
@@ -346,17 +440,9 @@ static bool merge_one_close_pair(Graph& graph, const Maze& maze, float distance_
             graph.nodes.push_back(merged);
             const int merged_idx = static_cast<int>(graph.nodes.size()) - 1;
 
-            for (int k = 0; k < old_node_count; ++k) {
-                if (k == i || k == j) continue;
-                if (graph.nodes[k].is_dead) continue;
-
-                float merged_weight = i_incident[k] + j_incident[k];
-                if (merged_weight <= 0.0f) continue;
-
-                if (edge_crosses_wall(maze, graph.nodes[merged_idx].pos, graph.nodes[k].pos)) {
-                    continue;
-                }
-
+            for (const auto& rw : reconnectable) {
+                const int k = rw.first;
+                const float merged_weight = rw.second;
                 // Keep graph effectively undirected by reconnecting both directions.
                 add_or_strengthen_edge(graph, merged_idx, k, merged_weight);
                 add_or_strengthen_edge(graph, k, merged_idx, merged_weight);
@@ -475,15 +561,13 @@ std::array<float, node_nn::INPUT_SIZE> compute_inputs(
     inp[3] = nearest_vec_n.y;
 
     // ---- I[4], I[5]: Nutrient Flow COM vector ----------------------------
-    // Based on local weighted diffusion equation:
-    // out_i_to_j = alpha * E_i * (w_ij / sum_w_i)
-    // in_j_to_i  = alpha * E_j * (w_ij / sum_w_j)
-    // net_from_j = in_j_to_i - out_i_to_j
-    // flow vector is sum(direction_to_j * net_from_j)
+    // Based on gradient diffusion on each edge:
+    // f(i->j) = beta * w_ij * (E_i - E_j)
+    // net(j->i) = -f(i->j) = beta * w_ij * (E_j - E_i)
+    // flow vector = sum(direction_to_j * net(j->i))
     Vec2  flow = {0.0f, 0.0f};
     float weight_sum = 0.0f;
-    float total_weight_i = 0.0f;
-    const float alpha = clamp(ENERGY_DIFFUSION_ALPHA, 0.0f, 1.0f);
+    const float beta = clamp(ENERGY_DIFFUSION_ALPHA, 0.0f, 1.0f);
 
     for (const Edge& e : node.edges) {
         if (e.weight <= 0.0f) continue;
@@ -491,7 +575,6 @@ std::array<float, node_nn::INPUT_SIZE> compute_inputs(
             e.target_node_idx >= static_cast<int>(graph.nodes.size()))
             continue;
         if (graph.nodes[e.target_node_idx].is_dead) continue;
-        total_weight_i += e.weight;
         weight_sum += e.weight;
     }
 
@@ -507,24 +590,19 @@ std::array<float, node_nn::INPUT_SIZE> compute_inputs(
         Vec2 edge_vec = {nbr.pos.x - node.pos.x, nbr.pos.y - node.pos.y};
         Vec2 edge_dir = vec2_normalize(edge_vec);
 
-        float total_weight_j = 0.0f;
+        float reverse_weight = 0.0f;
         for (const Edge& ej : nbr.edges) {
-            if (ej.weight <= 0.0f) continue;
-            if (ej.target_node_idx < 0 ||
-                ej.target_node_idx >= static_cast<int>(graph.nodes.size()))
-                continue;
-            if (graph.nodes[ej.target_node_idx].is_dead) continue;
-            total_weight_j += ej.weight;
+            if (ej.target_node_idx == node_idx && ej.weight > 0.0f) {
+                reverse_weight = ej.weight;
+                break;
+            }
         }
 
-        const float out_i_to_j = (total_weight_i > 1.0e-6f)
-            ? (alpha * node.energy * (e.weight / total_weight_i))
-            : 0.0f;
-        const float in_j_to_i = (total_weight_j > 1.0e-6f)
-            ? (alpha * nbr.energy * (e.weight / total_weight_j))
-            : 0.0f;
+        const float w_ij = (reverse_weight > 0.0f)
+            ? (0.5f * (e.weight + reverse_weight))
+            : e.weight;
 
-        const float net_from_j = in_j_to_i - out_i_to_j;
+        const float net_from_j = beta * w_ij * (nbr.energy - node.energy);
         flow.x += edge_dir.x * net_from_j;
         flow.y += edge_dir.y * net_from_j;
     }
@@ -874,57 +952,92 @@ void step(
         apply_vibe(graph, i, output, maze);
     }
 
-    // Energy rules (fully local, mass-conserving weighted diffusion).
+    // Energy rules (fully local gradient diffusion).
     const int m = static_cast<int>(graph.nodes.size());
     std::vector<float> old_energy(static_cast<size_t>(m), 0.0f);
     for (int i = 0; i < m; ++i) {
         old_energy[i] = graph.nodes[i].energy;
     }
 
-    const float alpha = clamp(ENERGY_DIFFUSION_ALPHA, 0.0f, 1.0f);
-    std::vector<float> next_energy(static_cast<size_t>(m), 0.0f);
+    const float beta = clamp(ENERGY_DIFFUSION_ALPHA, 0.0f, 1.0f);
+    const float outflow_cap_ratio = clamp(ENERGY_FLOW_GAIN, 0.0f, 1.0f);
+    std::vector<float> next_energy = old_energy;
 
-    // 1) Keep local remainder: (1 - alpha) * E_i
+    struct PairFlux {
+        int i;
+        int j;
+        float flux_i_to_j;
+    };
+
+    std::vector<PairFlux> pair_fluxes;
+    pair_fluxes.reserve(static_cast<size_t>(m * 2));
+    std::vector<float> raw_outflow(static_cast<size_t>(m), 0.0f);
+
+    // 1) Raw pairwise gradient flux on each undirected edge (i < j):
+    //    f(i->j) = beta * w_ij * (E_i - E_j)
+    // Also accumulate per-node raw outgoing amount.
     for (int i = 0; i < m; ++i) {
         if (graph.nodes[i].is_dead) continue;
-        const float outflow = old_energy[i] * alpha;
-        next_energy[i] += (old_energy[i] - outflow);
+
+        for (const Edge& e : graph.nodes[i].edges) {
+            if (e.weight <= 0.0f) continue;
+
+            const int j = e.target_node_idx;
+            if (j < 0 || j >= m) continue;
+            if (j <= i) continue;
+            if (graph.nodes[j].is_dead) continue;
+
+            float reverse_weight = 0.0f;
+            for (const Edge& ej : graph.nodes[j].edges) {
+                if (ej.target_node_idx == i && ej.weight > 0.0f) {
+                    reverse_weight = ej.weight;
+                    break;
+                }
+            }
+
+            const float w_ij = (reverse_weight > 0.0f)
+                ? (0.5f * (e.weight + reverse_weight))
+                : e.weight;
+
+            const float flux_i_to_j = beta * w_ij * (old_energy[i] - old_energy[j]);
+            pair_fluxes.push_back({i, j, flux_i_to_j});
+
+            if (flux_i_to_j > 0.0f) {
+                raw_outflow[i] += flux_i_to_j;
+            } else if (flux_i_to_j < 0.0f) {
+                raw_outflow[j] += -flux_i_to_j;
+            }
+        }
     }
 
-    // 2) Distribute outflow to neighbors in proportion to edge weights.
+    // 2) Per-node outflow cap (alpha-like):
+    //    out_i <= outflow_cap_ratio * E_i
+    // This guarantees at least (1 - outflow_cap_ratio) * E_i remains before
+    // maintenance/source/clamp stage.
+    std::vector<float> outflow_scale(static_cast<size_t>(m), 1.0f);
     for (int i = 0; i < m; ++i) {
         if (graph.nodes[i].is_dead) continue;
-
-        const float outflow = old_energy[i] * alpha;
-        float total_weight = 0.0f;
-
-        for (const Edge& e : graph.nodes[i].edges) {
-            if (e.weight <= 0.0f) continue;
-
-            const int j = e.target_node_idx;
-            if (j < 0 || j >= m) continue;
-            if (graph.nodes[j].is_dead) continue;
-
-            total_weight += e.weight;
+        const float cap_i = outflow_cap_ratio * std::max(0.0f, old_energy[i]);
+        if (raw_outflow[i] > 1.0e-6f) {
+            outflow_scale[i] = std::min(1.0f, cap_i / raw_outflow[i]);
         }
+    }
 
-        if (total_weight <= 1.0e-6f) continue;
-
-        for (const Edge& e : graph.nodes[i].edges) {
-            if (e.weight <= 0.0f) continue;
-
-            const int j = e.target_node_idx;
-            if (j < 0 || j >= m) continue;
-            if (graph.nodes[j].is_dead) continue;
-
-            const float flow_to_j = outflow * (e.weight / total_weight);
-            next_energy[j] += flow_to_j;
+    // 3) Apply capped fluxes.
+    for (const PairFlux& pf : pair_fluxes) {
+        float effective_flux = pf.flux_i_to_j;
+        if (effective_flux > 0.0f) {
+            effective_flux *= outflow_scale[pf.i];
+        } else if (effective_flux < 0.0f) {
+            effective_flux *= outflow_scale[pf.j];
         }
+        next_energy[pf.i] -= effective_flux;
+        next_energy[pf.j] += effective_flux;
     }
 
     const bool enable_energy_apoptosis = simulation_step > static_cast<int>(APOPTOSIS_WARMUP_STEPS);
 
-    // 3) Apply maintenance, source overwrite, clamp.
+    // 2) Apply maintenance, source overwrite, clamp.
     for (int i = 0; i < m; ++i) {
         if (graph.nodes[i].is_dead) continue;
 
@@ -936,7 +1049,7 @@ void step(
         graph.nodes[i].energy = clamp(new_e, ENERGY_MIN_CLAMP, ENERGY_MAX_CLAMP);
     }
 
-    // 4) Energy-based apoptosis.
+    // 3) Energy-based apoptosis.
     // Nodes with energy <= 0 die immediately, regardless of warmup.
     // Additional gate-based apoptosis is enabled after warmup.
     for (int i = 0; i < m; ++i) {

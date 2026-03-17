@@ -27,21 +27,21 @@ Similar to biological neural networks, greater activity creates pathways with he
 - **Wall Collision Handling**: Raycasting and edge validation to prevent wall penetration
 - **Anastomosis**: Automatic fusion when growing nodes approach each other
 - **Configuration System**: External hyperparameter file (no recompilation needed)
+- **Energy Diffusion Model**: Gradient-based local diffusion with per-step outflow cap, maintenance, source injection, clamp, and energy-based death
 - **JSON Export**: Complete simulation state export for visualization
 - **Debug System**: Detailed logging for growth and movement behaviors
+- **Trainer Executable**: Dedicated `train_nn` target for CSV-based supervised training
 
 ### 🚧 Partially Implemented
 
-- **Neural Network Training**: Adam optimizer implemented but not yet trained on biological data
+- **Biological Grounding**: Training pipeline is implemented, but real biological dataset integration remains ongoing
 - **Unstuck Mechanism**: Nodes can escape wall entrapment, but tuning needed
 
 ### ⏳ Planned Features
 
 - Biological data collection from *Pleurotus ostreatus* maze experiments
 - Training node-level networks on real mycelium behavior
-- Interactive HTML/JavaScript visualizer
 - Multi-target pathfinding
-- Energy/resource modeling
 - Network simplification and consolidation algorithms
 
 ---
@@ -72,11 +72,11 @@ mycelium-intelligence/
 **Inputs (8 dimensions)**: Environmental sensors
 1. **Pressure Vector X**: Repulsion from nearest wall (X component)
 2. **Pressure Vector Y**: Repulsion from nearest wall (Y component)
-3. **Target Vector X**: Direction to goal (X component, normalized)
-4. **Target Vector Y**: Direction to goal (Y component, normalized)
-5. **Flow COM Vector X**: Center-of-mass of connected edges weighted by strength
-6. **Flow COM Vector Y**: Center-of-mass of connected edges weighted by strength
-7. **Importance**: Sum of all connected edge weights (node's energy)
+3. **Nearest Node Vector X**: Direction to nearest alive node (X component, normalized)
+4. **Nearest Node Vector Y**: Direction to nearest alive node (Y component, normalized)
+5. **Flow COM Vector X**: Net nutrient-flow direction from local diffusion equation (X component)
+6. **Flow COM Vector Y**: Net nutrient-flow direction from local diffusion equation (Y component)
+7. **Importance**: `node.energy * ENERGY_IMPORTANCE_SCALE` if enabled, otherwise sum of connected edge weights
 8. **Crowdedness**: Number of nearby nodes within CROWD_RADIUS
 
 All inputs are clamped to [-INPUT_CLAMP, INPUT_CLAMP] to prevent overflow.
@@ -107,7 +107,7 @@ if output[6] > THRESHOLD_APOPTOSIS:
 ```
 V_prune = (output[2], output[3])
 for each edge:
-    if dot(edge_direction, V_prune) > 0:
+    if dot(edge_direction, V_prune) > 0 and target is not source:
         reduction = length(V_prune) * dot^PRUNE_EXPONENT
         edge.weight -= reduction
         if edge.weight < THRESHOLD_DEAD_EDGE:
@@ -122,7 +122,9 @@ V_grow = (output[0], output[1]) * GROW_MULTIPLIER
 for each edge:
     cos_theta = dot(edge_direction, V_grow)
     if cos_theta > SNAP_ANGLE_COS:
-        edge.weight += length(V_grow) * cos_theta
+        applied = min(length(V_grow) * cos_theta, affordable_by_energy)
+        edge.weight += applied
+        node.energy -= applied * ENERGY_COST_EDGE_THICKEN
         snapped = true
 
 # C2. Spatial-snap / Sprout new node
@@ -157,6 +159,27 @@ if no_edges_would_cross_walls(P_target):
 else:
     try_slide_along_wall()  # Fallback to X-only or Y-only movement
 ```
+
+### Energy Diffusion Model (Current)
+
+After per-node NN actions, energy is updated synchronously in three stages:
+
+1. **Pairwise gradient diffusion**
+    - For each undirected edge `(i, j)`, flux is computed as:
+    - `f(i->j) = beta * w_ij * (E_i - E_j)`
+    - Positive flux moves energy from `i` to `j`; negative flux means reverse direction.
+2. **Per-node outflow cap (alpha-like guarantee)**
+    - Raw outgoing flux from each node is capped by:
+    - `out_i <= ENERGY_FLOW_GAIN * E_i`
+    - This guarantees at least `(1 - ENERGY_FLOW_GAIN) * E_i` remains before maintenance/source/clamp.
+3. **Maintenance, source injection, clamp, death**
+    - `E_i <- E_i - ENERGY_MAINTENANCE_COST`
+    - Source nodes are overwritten to `ENERGY_SOURCE_VALUE`
+    - Then clamped to `[ENERGY_MIN_CLAMP, ENERGY_MAX_CLAMP]`
+    - Non-source nodes die immediately when `E_i <= 0`
+    - Additional gate death is enabled after warmup: `E_i <= NN_APOPTOSIS_ENERGY_GATE`
+
+Post-processing then removes dead/cross-wall edges, performs optional fusion, and enforces bidirectional edge symmetry.
 
 ---
 
@@ -242,6 +265,33 @@ All hyperparameters are defined in `hyperparameters.txt` at the project root. Ch
 | `DEBUG_GROW` | 0 | Enable detailed logging for growth behavior (1 = on) |
 | `DEBUG_SHIFT` | 0 | Enable detailed logging for movement behavior (1 = on) |
 
+#### Energy Dynamics
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `ENERGY_SOURCE_VALUE` | 100.0 | Energy value forced on source nodes each step |
+| `ENERGY_MAINTENANCE_COST` | 0.6 | Per-step energy cost per alive node |
+| `ENERGY_DIFFUSION_ALPHA` | 0.15 | Gradient diffusion coefficient `beta` in `f(i->j) = beta * w_ij * (E_i - E_j)` |
+| `ENERGY_FLOW_GAIN` | 1.0 | Per-step maximum outgoing fraction of node energy (outflow cap ratio) |
+| `ENERGY_FLOW_NORMALIZE_BY_DEGREE` | 1 | Reserved compatibility flag (currently not used in active diffusion path) |
+| `ENERGY_INITIAL` | 40.0 | Initial energy for non-source nodes |
+| `ENERGY_USE_AS_IMPORTANCE` | 1 | Use energy (scaled) for input[6] instead of weight-sum |
+| `ENERGY_IMPORTANCE_SCALE` | 0.05 | Scale factor when energy is used for input[6] |
+| `ENERGY_COST_EDGE_THICKEN` | 0.8 | Energy cost per unit edge-thickening |
+| `ENERGY_COST_NEW_CONNECTION` | 1.5 | Energy cost for new connection (anastomosis/sprout link) |
+| `ENERGY_COST_SPROUT` | 8.0 | Base energy cost to create a new node |
+| `ENERGY_CHILD_INITIAL` | 6.0 | Initial energy assigned to a sprouted child node |
+| `ENERGY_MIN_CLAMP` | -50.0 | Lower bound after update (before death check) |
+| `ENERGY_MAX_CLAMP` | 200.0 | Upper bound after update |
+
+#### Apoptosis / Fusion Stabilization
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `APOPTOSIS_WARMUP_STEPS` | 20 | Delay before gate-based apoptosis starts |
+| `NN_APOPTOSIS_ENERGY_GATE` | 0.45 | Additional death threshold after warmup |
+| `FUSION_DISTANCE` | 0.75 | Max distance for merge candidates |
+| `FUSION_MAX_MERGES_PER_STEP` | 8 | Merge attempts per step |
+| `FUSION_MIN_RETAIN_RATIO` | 0.90 | Minimum retained incident-weight ratio to allow merge |
+
 ---
 
 ## Known Issues and Limitations
@@ -258,7 +308,7 @@ All hyperparameters are defined in `hyperparameters.txt` at the project root. Ch
    - **Workaround**: Reduce `SNAP_RADIUS` or increase `THRESHOLD_SPROUT`
    - **Future Fix**: Add penalty for redundant connections
 
-3. **No Biological Training Data**: Network currently uses random weights with manual bias
+3. **No Biological Training Dataset Yet**: Pipeline exists, but model quality still depends on synthetic/heuristic data
    - **Impact**: Behavior is not biomimetic
    - **Solution**: Collect real *Pleurotus ostreatus* maze data and train
 
@@ -273,9 +323,8 @@ All hyperparameters are defined in `hyperparameters.txt` at the project root. Ch
 
 - **2D Only**: Current implementation is limited to planar mazes
 - **Single Target**: Only one goal position supported
-- **No Energy Model**: Nodes don't consume or compete for resources
+- **No Long-Term Memory**: Node decisions remain myopic and per-step local
 - **Static Maze**: Walls don't change during simulation
-- **No Memory**: Nodes make decisions based solely on current state
 
 ---
 
@@ -299,7 +348,6 @@ All hyperparameters are defined in `hyperparameters.txt` at the project root. Ch
 ### Medium Priority
 - Multi-target pathfinding
 - 3D maze support
-- Energy/resource modeling
 - Network simplification algorithms (merge redundant nodes)
 - Parallel simulation for parameter search
 

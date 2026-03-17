@@ -66,7 +66,7 @@ int main(int argc, char* argv[]) {
     // ---- Maze setup ---------------------------------------------------
     constexpr int MAZE_COLS = 5;   // "room" columns  -> grid width  = 11
     constexpr int MAZE_ROWS = 5;   // "room" rows     -> grid height = 11
-    constexpr unsigned MAZE_SEED = 42u;
+    constexpr unsigned MAZE_SEED = 48u;
 
     sim::Maze maze = sim::generate_maze(MAZE_COLS, MAZE_ROWS, MAZE_SEED);
     std::cout << "Maze: " << maze.width << " x " << maze.height << " cells\n";
