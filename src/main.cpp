@@ -20,6 +20,7 @@
 
 #include <iostream>
 #include <filesystem>
+#include <string>
 #include <vector>
 
 int main(int argc, char* argv[]) {
@@ -66,23 +67,11 @@ int main(int argc, char* argv[]) {
     // ---- Maze setup ---------------------------------------------------
     constexpr int MAZE_COLS = 5;   // "room" columns  -> grid width  = 11
     constexpr int MAZE_ROWS = 5;   // "room" rows     -> grid height = 11
-    constexpr unsigned MAZE_SEED = 49u;
+    constexpr unsigned MAZE_SEED_BEGIN = 42u;
+    constexpr unsigned MAZE_SEED_END   = 62u;
 
-    sim::Maze maze = sim::generate_maze(MAZE_COLS, MAZE_ROWS, MAZE_SEED);
-    std::cout << "Maze: " << maze.width << " x " << maze.height << " cells\n";
-
-    // Entry: enclosed start point at cell (1, 1) -> center (1.5, 1.5)
-    // Exit:  enclosed end point at cell (W-2, H-2) -> center (W-1.5, H-1.5)
-    const sim::Vec2 start  = { 1.5f, 1.5f };
-    const sim::Vec2 target = { static_cast<float>(maze.width)  - 1.5f,
-                               static_cast<float>(maze.height) - 1.5f };
-
-    std::cout << "Start:  (" << start.x  << ", " << start.y  << ")\n";
-    std::cout << "Target: (" << target.x << ", " << target.y << ")\n";
-
-    // ---- Initial graph: nodes on all empty cells ----------------------
-    sim::Graph graph;
-    {
+    auto build_initial_graph = [](const sim::Maze& maze) {
+        sim::Graph graph;
         const int start_col = 1;
         const int start_row = 1;
         const int end_col = maze.width - 2;
@@ -136,8 +125,8 @@ int main(int argc, char* argv[]) {
             }
         }
 
-        std::cout << "Initial graph: " << graph.nodes.size() << " nodes (all empty cells), start/end pinned\n";
-    }
+        return graph;
+    };
 
     // ---- Neural network: load trained model --------------------------
     node_nn::NeuralNetwork nn;
@@ -162,26 +151,44 @@ int main(int argc, char* argv[]) {
     std::cout << "NeuralNetwork: loaded trained model from " << loaded_model_path << "\n";
 
     // ---- Run simulation ----------------------------------------------
-    constexpr int NUM_STEPS        = 1200;  // Increased for longer simulation
-    const std::string output_path  = "sim_output.json";
+    constexpr int NUM_STEPS = 1200;
 
-    sim::SimExporter exporter(output_path, maze);
+    for (unsigned maze_seed = MAZE_SEED_BEGIN; maze_seed <= MAZE_SEED_END; ++maze_seed) {
+        sim::Maze maze = sim::generate_maze(MAZE_COLS, MAZE_ROWS, maze_seed);
+        const sim::Vec2 start = {1.5f, 1.5f};
+        const sim::Vec2 target = {
+            static_cast<float>(maze.width) - 1.5f,
+            static_cast<float>(maze.height) - 1.5f
+        };
 
-    for (int t = 0; t < NUM_STEPS; ++t) {
-        exporter.record(graph, t);
-        
-        if ((t + 1) % 10 == 0 || t < 5) {
-            std::cout << "\n=== Step " << (t + 1) << " ===\n";
-            std::cout << "Nodes: " << graph.nodes.size() << "\n";
+        sim::Graph graph = build_initial_graph(maze);
+
+        const std::string output_path = "sim_output_seed_" + std::to_string(maze_seed) + ".json";
+        sim::SimExporter exporter(output_path, maze);
+
+        std::cout << "\n=== Maze seed " << maze_seed << " ===\n";
+        std::cout << "Maze: " << maze.width << " x " << maze.height << " cells\n";
+        std::cout << "Start:  (" << start.x << ", " << start.y << ")\n";
+        std::cout << "Target: (" << target.x << ", " << target.y << ")\n";
+        std::cout << "Initial graph: " << graph.nodes.size() << " nodes (all empty cells), start/end pinned\n";
+
+        for (int t = 0; t < NUM_STEPS; ++t) {
+            exporter.record(graph, t);
+
+            if ((t + 1) % 100 == 0 || t < 3) {
+                std::cout << "[seed " << maze_seed << "] step " << (t + 1)
+                          << " nodes=" << graph.nodes.size() << "\n";
+            }
+
+            sim::step(graph, nn, target, maze);
         }
-        
-        sim::step(graph, nn, target, maze);
-    }
-    // Record final state
-    exporter.record(graph, NUM_STEPS);
-    exporter.finish();
 
-    std::cout << "Done. Output written to: " 
-              << std::filesystem::absolute(output_path).string() << "\n";
+        exporter.record(graph, NUM_STEPS);
+        exporter.finish();
+
+        std::cout << "Done. Output written to: "
+                  << std::filesystem::absolute(output_path).string() << "\n";
+    }
+
     return 0;
 }
