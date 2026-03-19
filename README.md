@@ -31,6 +31,11 @@ Similar to biological neural networks, greater activity creates pathways with he
 - **JSON Export**: Complete simulation state export for visualization
 - **Debug System**: Detailed logging for growth and movement behaviors
 - **Trainer Executable**: Dedicated `train_nn` target for CSV-based supervised training
+- **Deterministic Batch Evaluator**: `eval_seed_trials` for multi-seed metrics (`seed,step,connected,node_count`)
+- **Parallel Trials**: Batch evaluation with multi-thread execution (default 24 threads)
+- **Metrics Analyzer**: `results/analyze_connected_metrics.py` for disappearance events and persistent metrics
+- **Hyperparameter Search**: `heuristics/hyperparameter_sweep.py` supports sweep and stochastic hill-climb (optional annealing)
+- **Plot Utilities**: `results/visualize_persistent_decay.py` and `results/plot_node_nn_poster_figure.py`
 
 ### 🚧 Partially Implemented
 
@@ -212,11 +217,77 @@ The simulation outputs to `sim_output.json` in JSON format, containing:
 - All simulation steps with node positions and edge weights
 - Complete network topology evolution
 
+### Batch Evaluation Pipeline
+
+Run evaluator + analyzer in one command:
+
+```bat
+scripts\run_eval_and_analyze.bat
+```
+
+Defaults used by the batch script:
+- `TRIALS=512`
+- `STEPS=1200`
+- `THREADS=24`
+- output CSV: `cmake-build-debug\seed_step_metrics_512.csv`
+- analysis output: `results\connected_metrics`
+
+`--persistent-until-step` is auto-derived from:
+
+`ENERGY_PULSE_PERIOD_STEPS * 21.5`
+
+You can override this as the 9th argument:
+
+```bat
+scripts\run_eval_and_analyze.bat 512 1200 5 5 0 24 cmake-build-debug seed_step_metrics_512.csv 1100
+```
+
+Direct evaluator call:
+
+```bat
+cmake-build-debug\eval_seed_trials.exe hyperparameters.txt cmake-build-debug\seed_step_metrics_512.csv 512 1200 5 5 0 0 24
+```
+
+Direct analyzer call:
+
+```bat
+python results\analyze_connected_metrics.py cmake-build-debug\seed_step_metrics_512.csv --out-dir results\connected_metrics --persistent-until-step 1075
+```
+
+### Hyperparameter Search
+
+Use `heuristics/hyperparameter_sweep.py`:
+
+- `--mode sweep`: one-factor + random combinations
+- `--mode hill`: stochastic hill-climb (optional annealing)
+
+Example overnight hill-climb:
+
+```bat
+python heuristics\hyperparameter_sweep.py --mode hill --build-first --hc-restarts 12 --hc-iters 400 --hc-k 3 --hc-k-fine 1 --hc-fine-after 0.55 --deltas 0.02,0.03 --hc-fine-deltas 0.01 --hc-anneal --hc-temp-start 0.01 --hc-temp-end 0.0005 --hc-patience 80
+```
+
+### Plotting Utilities
+
+Persistent decay plot:
+
+```bat
+python results\visualize_persistent_decay.py
+```
+
+Poster-style conceptual figure:
+
+```bat
+python results\plot_node_nn_poster_figure.py --show
+```
+
 ---
 
 ## Configuration
 
 All hyperparameters are defined in `hyperparameters.txt` at the project root. Changes take effect immediately on next run—**no recompilation needed**.
+
+Note: the authoritative current values are those in `hyperparameters.txt` at runtime.
 
 ### Hyperparameter Categories
 
@@ -349,7 +420,6 @@ All hyperparameters are defined in `hyperparameters.txt` at the project root. Ch
 - Multi-target pathfinding
 - 3D maze support
 - Network simplification algorithms (merge redundant nodes)
-- Parallel simulation for parameter search
 
 ### Low Priority
 - Different maze algorithms (Prim's, Kruskal's, etc.)
