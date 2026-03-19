@@ -37,3 +37,6 @@
 **/cmake-build*/
 
 AI*
+
+results/connected_metrics/hparam_sweep/*
+results/hparam_sweep/*
